@@ -20,7 +20,6 @@ jobs:
         git checkout upstream/main -- android/ package.json yarn.lock src/
         echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
-        sed -i 's/reactNativeArchitectures=.*/reactNativeArchitectures=armeabi-v7a,arm64-v8a/g' android/gradle.properties
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -55,56 +54,12 @@ jobs:
           done
         fi
 
-    - name: Forcar Bitrate 25-35Mbps e Modo Ultra-Lite
+    - name: Otimizar Pacing de 60 FPS para EA FC 26 e Controle GameSir
       shell: python
       run: |
-        import os, re, base64
+        import os, re
 
-        # 1. Injetar Bitrate Minimo (20Mbps), Inicial (28Mbps) e Maximo (35Mbps) no WebRTCModule.java
-        webrtc_mod = "node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java"
-        if os.path.exists(webrtc_mod):
-            with open(webrtc_mod, "r", encoding="utf-8") as f:
-                wcode = f.read()
-            if "boostSdpBitrate" not in wcode and 'map.getString("sdp")' in wcode:
-                helper_lines = [
-                    "    private static String boostSdpBitrate(String sdp) {",
-                    "        if (sdp == null) return null;",
-                    "        sdp = sdp.replaceAll(\"b=AS:\\\\d+\", \"b=AS:35000\");",
-                    "        sdp = sdp.replace(\"packetization-mode=1\", \"packetization-mode=1;x-google-min-bitrate=20000;x-google-start-bitrate=28000;x-google-max-bitrate=35000\");",
-                    "        if (!sdp.contains(\"b=AS:\")) {",
-                    "            sdp = sdp.replaceAll(\"(m=video [^\\\\r\\\\n]+\\\\r?\\\\n)\", \"$1b=AS:35000\\\\r\\\\n\");",
-                    "        }",
-                    "        return sdp;",
-                    "    }"
-                ]
-                wcode = wcode.replace('map.getString("sdp")', 'boostSdpBitrate(map.getString("sdp"))')
-                last_b = wcode.rfind("}")
-                if last_b != -1:
-                    wcode = wcode[:last_b] + "\n" + "\n".join(helper_lines) + "\n}\n"
-                    with open(webrtc_mod, "w", encoding="utf-8") as f:
-                        f.write(wcode)
-
-        # 2. Aumentar limites de bitrate nos ficheiros JS/TS do player
-        for search_dir in ["src", "node_modules/xbox-xcloud-player", "node_modules/react-native-webrtc"]:
-            if os.path.exists(search_dir):
-                for root, _, files in os.walk(search_dir):
-                    for file in files:
-                        if file.endswith((".ts", ".tsx", ".js")):
-                            p = os.path.join(root, file)
-                            try:
-                                with open(p, "r", encoding="utf-8") as f:
-                                    c = f.read()
-                                orig = c
-                                c = c.replace("maxBitrate: 20000", "maxBitrate: 35000")
-                                c = c.replace("maxBitrate: 15000", "maxBitrate: 35000")
-                                c = c.replace("1024 * 20", "1024 * 35")
-                                if c != orig:
-                                    with open(p, "w", encoding="utf-8") as f:
-                                        f.write(c)
-                            except Exception:
-                                pass
-
-        # 3. Reequilibrar descodificador MediaCodec para TV TCL
+        # 1. Travar cadencia de 60 FPS no MediaCodec da TV TCL (evita queda para 45/50 FPS)
         for root, _, files in os.walk("android/app/src/main/java"):
             for file in files:
                 if file.endswith(".java"):
@@ -115,11 +70,34 @@ jobs:
                     c = c.replace("MediaFormat.KEY_PRIORITY, 0", "MediaFormat.KEY_PRIORITY, 1")
                     c = c.replace("KEY_OPERATING_RATE, Short.MAX_VALUE", "KEY_OPERATING_RATE, 60")
                     c = c.replace("KEY_OPERATING_RATE, Integer.MAX_VALUE", "KEY_OPERATING_RATE, 60")
+                    if "createVideoFormat(" in c and "KEY_FRAME_RATE" not in c:
+                        c = c.replace(
+                            "MediaFormat.createVideoFormat(mime, width, height);",
+                            "MediaFormat.createVideoFormat(mime, width, height); format.setInteger(MediaFormat.KEY_FRAME_RATE, 60); format.setInteger(MediaFormat.KEY_OPERATING_RATE, 60); format.setInteger(MediaFormat.KEY_PRIORITY, 1);"
+                        )
                     if c != orig:
                         with open(p, "w", encoding="utf-8") as f:
                             f.write(c)
 
-        # 4. Desativar completamente Controlos Virtuais no ecra (Zero GPU / Zero RAM)
+        # 2. Negociar 60 FPS constantes e Bitrate Minimo no SDP do player JS
+        for search_dir in ["src", "node_modules/xbox-xcloud-player"]:
+            if os.path.exists(search_dir):
+                for root, _, files in os.walk(search_dir):
+                    for file in files:
+                        if file.endswith((".ts", ".tsx", ".js")):
+                            p = os.path.join(root, file)
+                            try:
+                                with open(p, "r", encoding="utf-8") as f:
+                                    c = f.read()
+                                orig = c
+                                c = c.replace("packetization-mode=1", "packetization-mode=1;x-google-min-bitrate=18000;x-google-start-bitrate=20000;x-google-max-bitrate=30000;max-fps=60")
+                                if c != orig:
+                                    with open(p, "w", encoding="utf-8") as f:
+                                        f.write(c)
+                            except Exception:
+                                pass
+
+        # 3. Desativar completamente Controles Virtuais na tela (Zero GPU)
         tc_dir = "android/app/src/main/java/com/xstreaming/touchcontrols"
         if os.path.exists(tc_dir):
             for root, _, files in os.walk(tc_dir):
@@ -133,7 +111,7 @@ jobs:
                         with open(p, "w", encoding="utf-8") as f:
                             f.write(c)
 
-        # 5. Travar FSR e Lossless Scaling desligados
+        # 4. Travar FSR e Lossless Scaling desligados
         for sub in ["fsr", "framegen"]:
             d = os.path.join("android/app/src/main/java/com/xstreaming", sub)
             if os.path.exists(d):
@@ -147,17 +125,7 @@ jobs:
                             with open(p, "w", encoding="utf-8") as f:
                                 f.write(c)
 
-        # 6. Substituir PNGs de Splash por pixel de 68 bytes
-        tiny_png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
-        res_dir = "android/app/src/main/res"
-        if os.path.exists(res_dir):
-            for root, _, files in os.walk(res_dir):
-                for file in files:
-                    if file in ("screen.png", "screen_land.png"):
-                        with open(os.path.join(root, file), "wb") as f:
-                            f.write(tiny_png)
-
-        # 7. Filtro de 1000Hz do Dongle USB GameSir T4 Nova Lite na MainActivity
+        # 5. Filtro de 1000Hz do Dongle USB GameSir T4 Nova Lite na MainActivity
         main_act = "android/app/src/main/java/com/xstreaming/MainActivity.java"
         if os.path.exists(main_act):
             with open(main_act, "r", encoding="utf-8") as f:
@@ -204,7 +172,7 @@ jobs:
                     with open(main_act, "w", encoding="utf-8") as f:
                         f.write(code)
 
-    - name: Cortar Binarios x86/x86_64 do APK e Configurar Assinatura
+    - name: Configurar Assinatura
       run: |
         cat << 'EOF' > /tmp/init.gradle
         allprojects {
@@ -215,10 +183,6 @@ jobs:
                             release {
                                 signingConfig signingConfigs.debug
                             }
-                        }
-                        packagingOptions {
-                            exclude 'lib/x86/**'
-                            exclude 'lib/x86_64/**'
                         }
                     }
                 }
@@ -235,5 +199,5 @@ jobs:
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
       with:
-        name: XStreaming-TV-MaxBitrate-APK
+        name: XStreaming-TV-60FPS-APK
         path: android/app/build/outputs/apk/**/*.apk
