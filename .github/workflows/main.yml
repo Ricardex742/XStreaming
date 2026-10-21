@@ -33,8 +33,15 @@ jobs:
 
     - name: Install Dependencies
       run: |
+        echo "nodeLinker: node-modules" > .yarnrc.yml
+        node -e 'const fs = require("fs"); const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (pkg.scripts) delete pkg.scripts.postinstall; fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));'
         corepack enable
         yarn install
+        if [ -d "patches" ]; then
+          for f in patches/*.patch; do
+            [ -f "$f" ] && patch -p1 -N < "$f" || true
+          done
+        fi
 
     - name: Accept Android SDK Licenses & Configure Signing
       run: |
