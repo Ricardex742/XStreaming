@@ -25,11 +25,21 @@ jobs:
       with:
         distribution: 'temurin'
         java-version: '17'
+        cache: 'gradle'
 
     - name: Set up Node.js 20
       uses: actions/setup-node@v4
       with:
         node-version: '20'
+
+    - name: Set up Rust & Android NDK 23.1.7779620
+      run: |
+        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
+        if [ -d "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+          ln -sf "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/darwin-x86_64" || true
+        fi
 
     - name: Install Dependencies
       run: |
@@ -43,9 +53,8 @@ jobs:
           done
         fi
 
-    - name: Accept Android SDK Licenses & Configure Signing
+    - name: Configure Signing
       run: |
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
         cat << 'EOF' > /tmp/init.gradle
         allprojects {
             afterEvaluate { project ->
