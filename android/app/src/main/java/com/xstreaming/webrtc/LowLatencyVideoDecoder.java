@@ -1,238 +1,125 @@
 package com.xstreaming.webrtc;
 
+import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Build;
 import android.util.Log;
+import android.view.Surface;
 
-import androidx.annotation.Nullable;
+import com.xstreaming.LowLatencyDecoderConfig;
 
-import org.webrtc.EncodedImage;
-import org.webrtc.VideoCodecStatus;
-import org.webrtc.VideoDecoder;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
-import java.util.Locale;
+public class LowLatencyVideoDecoder {
+    private static final String TAG = "LowLatencyVideoDecoder";
+    private MediaCodec codec;
+    private boolean isRunning = false;
 
-class LowLatencyVideoDecoder implements VideoDecoder {
-    private static final String TAG = "LowLatencyDecoder";
-    private static final int OPERATING_RATE = 0x7FFF;
-
-    private final VideoDecoder delegate;
-    private boolean patched;
-
-    LowLatencyVideoDecoder(VideoDecoder delegate) {
-        this.delegate = delegate;
-    }
-
-    @Override
-    public VideoCodecStatus initDecode(Settings settings, Callback decodeCallback) {
-        patchMediaCodecWrapperFactory();
-        return delegate.initDecode(settings, decodeCallback);
-    }
-
-    @Override
-    public VideoCodecStatus release() {
-        return delegate.release();
-    }
-
-    @Override
-    public VideoCodecStatus decode(EncodedImage frame, DecodeInfo info) {
-        return delegate.decode(frame, info);
-    }
-
-    @Override
-    public String getImplementationName() {
-        return delegate.getImplementationName() + "+xstreaming-low-latency";
-    }
-
-    private void patchMediaCodecWrapperFactory() {
-        if (patched) {
-            return;
-        }
-        patched = true;
+    /**
+     * Aplica otimizações agressivas de tempo real no MediaFormat para Google TV (TCL 55P755)
+     */
+    public static void applyLowLatencyFlags(MediaFormat format) {
+        if (format == null) return;
 
         try {
-            Field factoryField = findMediaCodecWrapperFactoryField(delegate.getClass());
-            if (factoryField == null) {
-                Log.w(TAG, "MediaCodecWrapperFactory field not found on " + delegate.getClass().getName());
-                return;
+            // 1. Flag oficial do Android 11+ (API 30+) - Suportada nativamente na TCL 55P755 (Android 12)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
             }
 
-            factoryField.setAccessible(true);
-            Object originalFactory = factoryField.get(delegate);
-            if (originalFactory == null) {
-                Log.w(TAG, "MediaCodecWrapperFactory is null on " + delegate.getClass().getName());
-                return;
+            // 2. Prioridade máxima de Tempo Real (0 = Realtime) e Taxa de Operação Máxima
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+                format.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE);
             }
 
-            Class<?> factoryInterface = factoryField.getType();
-            Object proxyFactory = Proxy.newProxyInstance(
-                    factoryInterface.getClassLoader(),
-                    new Class<?>[]{factoryInterface},
-                    new MediaCodecWrapperFactoryHandler(originalFactory)
-            );
-            factoryField.set(delegate, proxyFactory);
-            Log.i(TAG, "Installed low latency MediaCodec wrapper for " + delegate.getClass().getName());
-        } catch (Throwable tr) {
-            Log.w(TAG, "Failed to install low latency MediaCodec wrapper.", tr);
+            // 3. Flags específicas de fabricantes de SoCs de Smart TV (MediaTek, Realtek, Qualcomm, Amlogic)
+            // As chaves não reconhecidas pelo driver atual são simplesmente ignoradas pelo MediaCodec sem erro.
+            format.setInteger("vendor.mtk.ext.dec.low_latency.enable", 1);
+            format.setInteger("vendor.rtk.low_latency", 1);
+            format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1);
+            format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1);
+            format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1);
+
+            // 4. Reduzir fila de buffers internos ao mínimo para eliminar input lag visual
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0);
+            }
+
+            Log.i(TAG, "Flags de Ultra-Baixa Latência aplicadas com sucesso para o MediaCodec.");
+        } catch (Exception e) {
+            Log.w(TAG, "Aviso ao aplicar flags de baixa latência: " + e.getMessage());
         }
     }
 
-    @Nullable
-    private static Field findMediaCodecWrapperFactoryField(Class<?> clazz) {
-        Class<?> current = clazz;
-        while (current != null) {
-            for (Field field : current.getDeclaredFields()) {
-                if ("org.webrtc.MediaCodecWrapperFactory".equals(field.getType().getName())
-                        || field.getName().toLowerCase(Locale.US).contains("mediacodecwrapperfactory")) {
-                    return field;
+    /**
+     * Inicializa o MediaCodec garantindo o caminho de Hardware (Zero-Copy) direto para a Surface
+     */
+    public boolean initDecode(String mimeType, int width, int height, Surface surface) {
+        try {
+            codec = MediaCodec.createDecoderByType(mimeType);
+            MediaFormat format = MediaFormat.createVideoFormat(mimeType, width, height);
+
+            if (LowLatencyDecoderConfig.isEnabled()) {
+                applyLowLatencyFlags(format);
+            }
+
+            // Configura o codec diretamente na Surface da TV (ativa o chip de upscaling TCL AiPQ)
+            codec.configure(format, surface, null, 0);
+            codec.start();
+            isRunning = true;
+            return true;
+        } catch (IOException | IllegalArgumentException e) {
+            Log.e(TAG, "Falha ao inicializar LowLatencyVideoDecoder: " + e.getMessage());
+            release();
+            return false;
+        }
+    }
+
+    /**
+     * Processa um pacote de vídeo H.264/HEVC recebido e renderiza imediatamente
+     */
+    public boolean decodeFrame(ByteBuffer encodedData, int size, long presentationTimeUs) {
+        if (!isRunning || codec == null) return false;
+
+        try {
+            // Timeout curto (2ms) para não bloquear a thread de rede WebRTC/Nano
+            int inputBufferIndex = codec.dequeueInputBuffer(2000);
+            if (inputBufferIndex >= 0) {
+                ByteBuffer inputBuffer = codec.getInputBuffer(inputBufferIndex);
+                if (inputBuffer != null) {
+                    inputBuffer.clear();
+                    inputBuffer.put(encodedData);
+                    codec.queueInputBuffer(inputBufferIndex, 0, size, presentationTimeUs, 0);
                 }
             }
-            current = current.getSuperclass();
-        }
-        return null;
-    }
 
-    private static class MediaCodecWrapperFactoryHandler implements InvocationHandler {
-        private final Object delegateFactory;
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            int outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0);
 
-        MediaCodecWrapperFactoryHandler(Object delegateFactory) {
-            this.delegateFactory = delegateFactory;
-        }
-
-        @Override
-        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-            Object result = invokeDelegate(delegateFactory, method, args);
-            if (!"createByCodecName".equals(method.getName()) || result == null) {
-                return result;
+            while (outputBufferIndex >= 0) {
+                // Renderiza imediatamente na Surface da TV sem esperar pelo timestamp de sincronia (render = true)
+                codec.releaseOutputBuffer(outputBufferIndex, true);
+                outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0);
             }
-
-            String codecName = args != null && args.length > 0 && args[0] instanceof String
-                    ? (String) args[0]
-                    : "";
-            Class<?> codecWrapperInterface = result.getClass().getInterfaces().length > 0
-                    ? result.getClass().getInterfaces()[0]
-                    : null;
-            if (codecWrapperInterface == null
-                    || !"org.webrtc.MediaCodecWrapper".equals(codecWrapperInterface.getName())) {
-                codecWrapperInterface = findInterface(result.getClass(), "org.webrtc.MediaCodecWrapper");
-            }
-
-            if (codecWrapperInterface == null) {
-                Log.w(TAG, "MediaCodecWrapper interface not found on " + result.getClass().getName());
-                return result;
-            }
-
-            return Proxy.newProxyInstance(
-                    codecWrapperInterface.getClassLoader(),
-                    new Class<?>[]{codecWrapperInterface},
-                    new MediaCodecWrapperHandler(result, codecName)
-            );
+            return true;
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "Erro durante decodeFrame: " + e.getMessage());
+            return false;
         }
     }
 
-    @Nullable
-    private static Class<?> findInterface(Class<?> clazz, String interfaceName) {
-        Class<?> current = clazz;
-        while (current != null) {
-            for (Class<?> item : current.getInterfaces()) {
-                if (interfaceName.equals(item.getName())) {
-                    return item;
-                }
-            }
-            current = current.getSuperclass();
-        }
-        return null;
-    }
-
-    private static class MediaCodecWrapperHandler implements InvocationHandler {
-        private final Object delegateCodec;
-        private final String codecName;
-
-        MediaCodecWrapperHandler(Object delegateCodec, String codecName) {
-            this.delegateCodec = delegateCodec;
-            this.codecName = codecName == null ? "" : codecName;
-        }
-
-        @Override
-        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-            if ("configure".equals(method.getName())
-                    && args != null
-                    && args.length > 0
-                    && args[0] instanceof MediaFormat) {
-                applyLowLatencyFormat((MediaFormat) args[0], codecName);
-            }
-            return invokeDelegate(delegateCodec, method, args);
-        }
-    }
-
-    private static Object invokeDelegate(Object target, Method method, Object[] args) throws Throwable {
-        try {
-            method.setAccessible(true);
-            return method.invoke(target, args);
-        } catch (InvocationTargetException ex) {
-            throw ex.getCause() == null ? ex : ex.getCause();
-        } catch (SecurityException ex) {
-            return method.invoke(target, args);
-        }
-    }
-
-    private static void applyLowLatencyFormat(MediaFormat format, String codecName) {
-        putInt(format, "low-latency", 1);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            putInt(format, "priority", 0);
-            putInt(format, "operating-rate", OPERATING_RATE);
-        }
-
-        putInt(format, "allow-frame-drop", 1);
-        putInt(format, "vdec-lowlatency", 1);
-        putInt(format, "vendor.low-latency.enable", 1);
-
-        String normalizedCodecName = codecName == null ? "" : codecName.toLowerCase(Locale.US);
-        if (isQualcommDecoder(normalizedCodecName)) {
-            putInt(format, "vendor.qti-ext-dec-picture-order.enable", 1);
-            putInt(format, "vendor.qti-ext-dec-low-latency.enable", 1);
-            putInt(format, "vendor.qti-ext-output-sw-fence-enable.value", 1);
-            putInt(format, "vendor.qti-ext-output-fence.enable", 1);
-            putInt(format, "vendor.qti-ext-output-fence.fence_type", 1);
-            putInt(format, "vendor.rtc-ext-dec-low-latency.enable", 1);
-        }
-
-        if (isHiSiliconDecoder(normalizedCodecName)) {
-            putInt(format, "vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1);
-            putInt(format, "vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1);
-        }
-
-        Log.i(TAG, "Applied low latency decoder format for codec=" + codecName);
-    }
-
-    private static boolean isQualcommDecoder(String codecName) {
-        return codecName.contains("qcom") || codecName.contains("qti");
-    }
-
-    private static boolean isHiSiliconDecoder(String codecName) {
-        String hardware = Build.HARDWARE == null ? "" : Build.HARDWARE.toLowerCase(Locale.US);
-        String board = Build.BOARD == null ? "" : Build.BOARD.toLowerCase(Locale.US);
-        String manufacturer = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.toLowerCase(Locale.US);
-        return codecName.contains("hisi")
-                || codecName.contains("kirin")
-                || hardware.contains("hisi")
-                || hardware.contains("kirin")
-                || board.contains("hisi")
-                || board.contains("kirin")
-                || manufacturer.contains("huawei");
-    }
-
-    private static void putInt(MediaFormat format, String key, int value) {
-        try {
-            format.setInteger(key, value);
-        } catch (Throwable tr) {
-            Log.w(TAG, "Failed to set MediaFormat key " + key, tr);
+    public void release() {
+        isRunning = false;
+        if (codec != null) {
+            try {
+                codec.stop();
+            } catch (Exception ignored) {}
+            try {
+                codec.release();
+            } catch (Exception ignored) {}
+            codec = null;
         }
     }
 }
