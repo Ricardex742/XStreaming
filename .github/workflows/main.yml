@@ -17,14 +17,15 @@ jobs:
       run: |
         git remote add upstream https://github.com/Geocld/XStreaming.git || true
         git fetch upstream main
-        git checkout upstream/main -- android/ package.json yarn.lock
+        git checkout upstream/main -- android/ package.json yarn.lock src/
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
 
-    - name: Injetar Otimizacoes para Dongle GameSir e Decodificador
+    - name: Aplicar Modo Ultra-Leve para TV TCL 55P755
       shell: python
       run: |
-        import os
+        import os, re, base64
 
+        # 1. Reequilibrar decodificador MediaCodec (evita perda de pacotes e sufocamento da CPU Cortex-A55)
         for root, _, files in os.walk("android/app/src/main/java"):
             for file in files:
                 if file.endswith(".java"):
@@ -33,12 +34,70 @@ jobs:
                         c = f.read()
                     orig = c
                     c = c.replace("MediaFormat.KEY_PRIORITY, 0", "MediaFormat.KEY_PRIORITY, 1")
-                    c = c.replace("MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE", "MediaFormat.KEY_OPERATING_RATE, 60")
-                    c = c.replace("MediaFormat.KEY_OPERATING_RATE, Integer.MAX_VALUE", "MediaFormat.KEY_OPERATING_RATE, 60")
+                    c = c.replace("KEY_OPERATING_RATE, Short.MAX_VALUE", "KEY_OPERATING_RATE, 60")
+                    c = c.replace("KEY_OPERATING_RATE, Integer.MAX_VALUE", "KEY_OPERATING_RATE, 60")
                     if c != orig:
                         with open(p, "w", encoding="utf-8") as f:
                             f.write(c)
 
+        # 2. Desativar completamente Controles Virtuais na tela (Zero GPU / Zero RAM)
+        tc_dir = "android/app/src/main/java/com/xstreaming/touchcontrols"
+        if os.path.exists(tc_dir):
+            for root, _, files in os.walk(tc_dir):
+                for file in files:
+                    if file.endswith(".java"):
+                        p = os.path.join(root, file)
+                        with open(p, "r", encoding="utf-8") as f:
+                            c = f.read()
+                        c = re.sub(r'(protected\s+void\s+onDraw\s*\([^)]*\)\s*\{)', r'\1 setVisibility(android.view.View.GONE); if (true) return;', c)
+                        c = re.sub(r'(public\s+boolean\s+onTouchEvent\s*\([^)]*\)\s*\{)', r'\1 if (true) return false;', c)
+                        with open(p, "w", encoding="utf-8") as f:
+                            f.write(c)
+
+        # 3. Travar FSR e Lossless Scaling (FrameGen) desligados no Java para poupar VRAM
+        for sub in ["fsr", "framegen"]:
+            d = os.path.join("android/app/src/main/java/com/xstreaming", sub)
+            if os.path.exists(d):
+                for root, _, files in os.walk(d):
+                    for file in files:
+                        if file.endswith(".java"):
+                            p = os.path.join(root, file)
+                            with open(p, "r", encoding="utf-8") as f:
+                                c = f.read()
+                            c = re.sub(r'(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)', r'\1 \2 = false;', c)
+                            with open(p, "w", encoding="utf-8") as f:
+                                f.write(c)
+
+        # 4. Esvaziar pacotes pesados de WebView legado em assets/stream
+        stream_assets = "android/app/src/main/assets/stream/assets"
+        if os.path.exists(stream_assets):
+            for root, _, files in os.walk(stream_assets):
+                for file in files:
+                    if "legacy" in file and file.endswith(".js"):
+                        with open(os.path.join(root, file), "w", encoding="utf-8") as f:
+                            f.write("")
+
+        # 5. Substituir PNGs pesados de Splash Screen por pixel escuro de 68 bytes (poupa ~30MB de RAM)
+        tiny_png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+        res_dir = "android/app/src/main/res"
+        if os.path.exists(res_dir):
+            for root, _, files in os.walk(res_dir):
+                for file in files:
+                    if file in ("screen.png", "screen_land.png"):
+                        with open(os.path.join(root, file), "wb") as f:
+                            f.write(tiny_png)
+
+        # 6. Remover arquiteturas de PC (x86 / x86_64) do APK final para reduzir metade do tamanho
+        bg_path = "android/app/build.gradle"
+        if os.path.exists(bg_path):
+            with open(bg_path, "r", encoding="utf-8") as f:
+                bg = f.read()
+            bg = bg.replace('"x86", "x86_64", ', '').replace('"x86", "x86_64"', '"armeabi-v7a", "arm64-v8a"')
+            bg = bg.replace("'x86', 'x86_64', ", "").replace("'x86', 'x86_64'", "'armeabi-v7a', 'arm64-v8a'")
+            with open(bg_path, "w", encoding="utf-8") as f:
+                f.write(bg)
+
+        # 7. Filtro de 1000Hz do Dongle USB GameSir T4 Nova Lite na MainActivity
         main_act = "android/app/src/main/java/com/xstreaming/MainActivity.java"
         if os.path.exists(main_act):
             with open(main_act, "r", encoding="utf-8") as f:
@@ -145,5 +204,5 @@ jobs:
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
       with:
-        name: XStreaming-TV-APK
+        name: XStreaming-TV-UltraLite-APK
         path: android/app/build/outputs/apk/**/*.apk
