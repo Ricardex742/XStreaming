@@ -13,12 +13,91 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Restaurar base limpa e otimizar para Android TV
+    - name: Limpar base Android
       run: |
         git remote add upstream https://github.com/Geocld/XStreaming.git || true
         git fetch upstream main
         git checkout upstream/main -- android/ package.json yarn.lock
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
+
+    - name: Injetar Otimizacoes para Dongle GameSir e TV TCL
+      shell: python
+      run: |
+        import os, re
+
+        # 1. Reequilibrar o decodificador (evita que os 5ms sufoquem a rede e causem perda de pacotes)
+        for root, _, files in os.walk("android/app/src/main/java"):
+            for file in files:
+                if file.endswith(".java"):
+                    p = os.path.join(root, file)
+                    with open(p, "r", encoding="utf-8") as f:
+                        c = f.read()
+                    orig = c
+                    c = c.replace("MediaFormat.KEY_PRIORITY, 0", "MediaFormat.KEY_PRIORITY, 1")
+                    c = c.replace("KEY_OPERATING_RATE, Short.MAX_VALUE", "KEY_OPERATING_RATE, 60")
+                    c = c.replace("KEY_OPERATING_RATE, Integer.MAX_VALUE", "KEY_OPERATING_RATE, 60")
+                    if c != orig:
+                        with open(p, "w", encoding="utf-8") as f:
+                            f.write(c)
+
+        # 2. Filtrar excesso de eventos de 1000Hz do Dongle USB e garantir parada imediata do analogico
+        main_act = "android/app/src/main/java/com/xstreaming/MainActivity.java"
+        if os.path.exists(main_act):
+            with open(main_act, "r", encoding="utf-8") as f:
+                code = f.read()
+
+            fields = """
+    private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;
+    private long _lastMotionTime = 0L;
+    private boolean _wasCentered = true;
+"""
+            throttle_logic = """
+        if (event != null && (event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {
+            float lx = event.getAxisValue(android.view.MotionEvent.AXIS_X);
+            float ly = event.getAxisValue(android.view.MotionEvent.AXIS_Y);
+            float rx = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
+            float ry = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
+            float lt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_BRAKE));
+            float rt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_GAS));
+            float hatX = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X);
+            float hatY = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y);
+            boolean isCentered = Math.abs(lx) < 0.08f && Math.abs(ly) < 0.08f && Math.abs(rx) < 0.08f && Math.abs(ry) < 0.08f && lt < 0.05f && rt < 0.05f;
+            boolean hatChanged = Float.compare(hatX, _lastHatX) != 0 || Float.compare(hatY, _lastHatY) != 0;
+            long now = android.os.SystemClock.uptimeMillis();
+            if (!hatChanged) {
+                if (isCentered) {
+                    if (_wasCentered) return true;
+                    _wasCentered = true;
+                } else {
+                    _wasCentered = false;
+                    if (now - _lastMotionTime < 14L) return true;
+                    if (Math.abs(lx - _lastLX) < 0.015f && Math.abs(ly - _lastLY) < 0.015f && Math.abs(rx - _lastRX) < 0.015f && Math.abs(ry - _lastRY) < 0.015f && Math.abs(lt - _lastLT) < 0.02f && Math.abs(rt - _lastRT) < 0.02f) return true;
+                }
+            }
+            _lastHatX = hatX; _lastHatY = hatY;
+            _lastLX = lx; _lastLY = ly; _lastRX = rx; _lastRY = ry; _lastLT = lt; _lastRT = rt;
+            _lastMotionTime = now;
+        }
+"""
+            if "_lastMotionTime" not in code and "dispatchGenericMotionEvent" not in code:
+                last_brace = code.rfind("}")
+                if last_brace != -1:
+                    method = fields + "\n    @Override\n    public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {\n" + throttle_logic + "\n        return super.dispatchGenericMotionEvent(event);\n    }\n"
+                    code = code[:last_brace] + method + code[last_brace:]
+                    with open(main_act, "w", encoding="utf-8") as f:
+                        f.write(code)
+
+        # 3. Desativar servicos em segundo plano de celular quando rodar na TV
+        main_app = "android/app/src/main/java/com/xstreaming/MainApplication.java"
+        if os.path.exists(main_app):
+            with open(main_app, "r", encoding="utf-8") as f:
+                app_code = f.read()
+            for pkg in ["SensorPackage", "GamepadSensorPackage", "BatteryPackage", "PipPackage"]:
+                old = f"packages.add(new {pkg}());"
+                new = f"if (!getApplicationContext().getPackageManager().hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)) {{ {old} }}"
+                app_code = app_code.replace(old, new)
+            with open(main_app, "w", encoding="utf-8") as f:
+                f.write(app_code)
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
