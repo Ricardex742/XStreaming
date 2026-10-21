@@ -164,3 +164,17 @@ public class MainApplication extends Application implements ReactApplication {
     ReactNativeFlipper.initializeFlipper(this, getReactNativeHost().getReactInstanceManager());
   }
 }
+// Dentro de MainApplication.java, no método getPackages():
+boolean isTelevision = getApplicationContext().getPackageManager()
+        .hasSystemFeature( android.content.pm.PackageManager.FEATURE_LEANBACK );
+
+if (!isTelevision) {
+    // Só carrega estes pacotes em telemóveis/tablets (poupa memória na TCL 55P755)
+    packages.add(new AnalogStickPackage());
+    packages.add(new ButtonViewPackage());
+    packages.add(new SensorPackage());
+    packages.add(new GamepadSensorPackage());
+    packages.add(new BatteryPackage());
+    packages.add(new PipPackage());
+}
+
