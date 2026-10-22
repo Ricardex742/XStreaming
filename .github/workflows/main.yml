@@ -58,7 +58,7 @@ jobs:
           done
         fi
 
-    - name: Aplicar Ultra-Lite, Tema Xbox e Auto-Play Direto nos Jogos
+    - name: Aplicar Ultra-Lite, Tema Xbox e Auto-Play Completo (Consoles -> xCloud -> Jogo)
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -82,13 +82,14 @@ jobs:
           'import android.view.*;',
           'import android.view.accessibility.AccessibilityNodeInfo;',
           'import android.view.inputmethod.EditorInfo;',
+          'import android.view.inputmethod.InputConnection;',
           'import android.widget.*;',
           'import java.lang.reflect.Field;',
           'import java.util.*;',
           'public class TvShortcutHelper {',
           '  public static String sPendingGame = null;',
           '  private static boolean sLoopStarted = false;',
-          '  private static int sSearchAttempts = 0;',
+          '  private static int sCatalogTicks = 0;',
           '  private static boolean sTypedInSearch = false;',
           '  private static long sLastActionTime = 0L;',
           '  private static String norm(String s) {',
@@ -103,10 +104,11 @@ jobs:
           '        String t = i.getStringExtra("game_title");',
           '        if (t != null && !t.isEmpty()) {',
           '          sPendingGame = t.trim();',
-          '          sSearchAttempts = 0;',
+          '          sCatalogTicks = 0;',
           '          sTypedInSearch = false;',
+          '          sLastActionTime = 0L;',
           '          i.removeExtra("game_title");',
-          '          Toast.makeText(act, "Iniciando automaticamente: " + sPendingGame, Toast.LENGTH_LONG).show();',
+          '          Toast.makeText(act, "Abrindo automaticamente: " + sPendingGame, Toast.LENGTH_LONG).show();',
           '        }',
           '      }',
           '    } catch (Exception ignored) {}',
@@ -114,8 +116,8 @@ jobs:
           '      sLoopStarted = true;',
           '      final Handler h = new Handler(Looper.getMainLooper());',
           '      h.postDelayed(new Runnable() {',
-          '        @Override public void run() { autoLaunchLoop(act); h.postDelayed(this, 600); }',
-          '      }, 700);',
+          '        @Override public void run() { autoLaunchLoop(act); h.postDelayed(this, 500); }',
+          '      }, 600);',
           '    }',
           '  }',
           '  private static List<View> getAllRootViews(Activity act) {',
@@ -139,89 +141,134 @@ jobs:
           '      for (int i = 0; i < vg.getChildCount(); i++) collectViews(vg.getChildAt(i), texts, edits);',
           '    }',
           '  }',
-          '  private static void tapAtRoot(View root, View target, boolean tapAboveCover) {',
+          '  private static void sendKey(Activity act, View root, int keyCode) {',
           '    try {',
+          '      long now = SystemClock.uptimeMillis();',
+          '      KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0);',
+          '      KeyEvent up = new KeyEvent(now, now + 30, KeyEvent.ACTION_UP, keyCode, 0);',
+          '      act.dispatchKeyEvent(down);',
+          '      act.dispatchKeyEvent(up);',
+          '      if (root != null) { root.dispatchKeyEvent(down); root.dispatchKeyEvent(up); }',
+          '    } catch (Exception ignored) {}',
+          '  }',
+          '  private static void tapTarget(Activity act, View root, View target, boolean tapAboveCover) {',
+          '    try {',
+          '      int[] loc = new int[2]; target.getLocationOnScreen(loc);',
+          '      int[] rLoc = new int[2]; root.getLocationOnScreen(rLoc);',
+          '      float x = (loc[0] - rLoc[0]) + (target.getWidth() / 2.0f);',
+          '      float y = (loc[1] - rLoc[1]) + (target.getHeight() / 2.0f);',
+          '      long now = SystemClock.uptimeMillis();',
+          '      if (tapAboveCover && y > 110f) {',
+          '        float cy = y - 85f;',
+          '        root.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, cy, 0));',
+          '        root.dispatchTouchEvent(MotionEvent.obtain(now, now + 50, MotionEvent.ACTION_UP, x, cy, 0));',
+          '      }',
+          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 60, MotionEvent.ACTION_DOWN, x, y, 0));',
+          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 110, MotionEvent.ACTION_UP, x, y, 0));',
           '      View cur = target;',
           '      while (cur != null) {',
           '        try { cur.performAccessibilityAction(AccessibilityNodeInfo.ACTION_CLICK, null); } catch (Exception ignored) {}',
           '        if (cur.isFocusable()) cur.requestFocus();',
+          '        if (cur.isClickable()) cur.performClick();',
           '        ViewParent p = cur.getParent();',
           '        cur = (p instanceof View) ? (View) p : null;',
           '      }',
-          '      int[] loc = new int[2];',
-          '      target.getLocationOnScreen(loc);',
-          '      int[] rLoc = new int[2];',
-          '      root.getLocationOnScreen(rLoc);',
-          '      float x = (loc[0] - rLoc[0]) + (target.getWidth() / 2.0f);',
-          '      float y = (loc[1] - rLoc[1]) + (target.getHeight() / 2.0f);',
+          '      sendKey(act, root, KeyEvent.KEYCODE_DPAD_CENTER);',
+          '      sendKey(act, root, KeyEvent.KEYCODE_BUTTON_A);',
+          '      sendKey(act, root, KeyEvent.KEYCODE_ENTER);',
+          '    } catch (Exception ignored) {}',
+          '  }',
+          '  private static void typeIntoReactEdit(Activity act, View root, EditText et, String query) {',
+          '    try {',
+          '      int[] loc = new int[2]; et.getLocationOnScreen(loc);',
+          '      int[] rLoc = new int[2]; root.getLocationOnScreen(rLoc);',
+          '      float x = (loc[0] - rLoc[0]) + (et.getWidth() / 2.0f);',
+          '      float y = (loc[1] - rLoc[1]) + (et.getHeight() / 2.0f);',
           '      long now = SystemClock.uptimeMillis();',
           '      root.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0));',
-          '      root.dispatchTouchEvent(MotionEvent.obtain(now, now + 45, MotionEvent.ACTION_UP, x, y, 0));',
-          '      if (tapAboveCover && y > 90f) {',
-          '        float cy = y - 75f;',
-          '        root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 60, MotionEvent.ACTION_DOWN, x, cy, 0));',
-          '        root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 105, MotionEvent.ACTION_UP, x, cy, 0));',
+          '      root.dispatchTouchEvent(MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP, x, y, 0));',
+          '      et.requestFocus();',
+          '      et.setText("");',
+          '      InputConnection ic = et.onCreateInputConnection(new EditorInfo());',
+          '      if (ic != null) {',
+          '        ic.deleteSurroundingText(100, 100);',
+          '        ic.commitText(query, 1);',
+          '        ic.performEditorAction(EditorInfo.IME_ACTION_SEARCH);',
+          '        ic.performEditorAction(EditorInfo.IME_ACTION_DONE);',
           '      }',
-          '      root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER));',
-          '      root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER));',
+          '      KeyCharacterMap kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);',
+          '      KeyEvent[] events = kcm.getEvents(query.toCharArray());',
+          '      if (events != null) {',
+          '        for (KeyEvent ev : events) { et.dispatchKeyEvent(ev); act.dispatchKeyEvent(ev); }',
+          '      }',
+          '      et.onEditorAction(EditorInfo.IME_ACTION_SEARCH);',
+          '      et.onEditorAction(EditorInfo.IME_ACTION_DONE);',
+          '      sendKey(act, root, KeyEvent.KEYCODE_ENTER);',
+          '      float sx = (loc[0] - rLoc[0]) + et.getWidth() + 40f;',
+          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 120, now + 120, MotionEvent.ACTION_DOWN, sx, y, 0));',
+          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 120, now + 170, MotionEvent.ACTION_UP, sx, y, 0));',
           '    } catch (Exception ignored) {}',
           '  }',
           '  private static void autoLaunchLoop(Activity act) {',
           '    if (sPendingGame == null) return;',
           '    long now = SystemClock.uptimeMillis();',
-          '    if (now - sLastActionTime < 1300L) return;',
+          '    if (now - sLastActionTime < 1100L) return;',
           '    try {',
           '      String targetNorm = norm(sPendingGame);',
           '      String shortNorm = norm(sPendingGame.split(":")[0]);',
           '      List<View> roots = getAllRootViews(act);',
+          '      // PASSO 1: Se ja estiver na janela do jogo, clicar em "Iniciar jogo na nuvem"',
           '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
           '        View root = roots.get(rIdx);',
-          '        List<TextView> tvs = new ArrayList<>();',
-          '        List<EditText> edits = new ArrayList<>();',
+          '        List<TextView> tvs = new ArrayList<>(); List<EditText> edits = new ArrayList<>();',
           '        collectViews(root, tvs, edits);',
           '        for (TextView tv : tvs) {',
           '          String raw = tv.getText() != null ? tv.getText().toString().trim() : "";',
           '          if (raw.equalsIgnoreCase("Iniciar jogo na nuvem") || raw.equalsIgnoreCase("Start cloud game")) {',
-          '            sPendingGame = null;',
-          '            sLastActionTime = now;',
-          '            tapAtRoot(root, tv, false);',
+          '            sPendingGame = null; sLastActionTime = now;',
+          '            tapTarget(act, root, tv, false);',
           '            return;',
           '          }',
           '        }',
           '      }',
+          '      // PASSO 2: Se estiver parado na tela "Consoles / Mais", clicar automaticamente no botao "xCloud"',
           '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
           '        View root = roots.get(rIdx);',
-          '        List<TextView> tvs = new ArrayList<>();',
-          '        List<EditText> edits = new ArrayList<>();',
+          '        List<TextView> tvs = new ArrayList<>(); List<EditText> edits = new ArrayList<>();',
+          '        collectViews(root, tvs, edits);',
+          '        TextView xcloudBtn = null; boolean isConsoleMenu = false;',
+          '        for (TextView tv : tvs) {',
+          '          String raw = tv.getText() != null ? tv.getText().toString().trim() : "";',
+          '          if (raw.equalsIgnoreCase("xCloud")) xcloudBtn = tv;',
+          '          if (raw.equalsIgnoreCase("Consoles") || raw.equalsIgnoreCase("Conquistas") || raw.contains("Nenhum console")) isConsoleMenu = true;',
+          '        }',
+          '        if (xcloudBtn != null && isConsoleMenu) {',
+          '          sLastActionTime = now;',
+          '          tapTarget(act, root, xcloudBtn, true);',
+          '          return;',
+          '        }',
+          '      }',
+          '      // PASSO 3: Ja dentro do catalogo do xCloud, procurar o jogo na tela ou pesquisar na barra',
+          '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
+          '        View root = roots.get(rIdx);',
+          '        List<TextView> tvs = new ArrayList<>(); List<EditText> edits = new ArrayList<>();',
           '        collectViews(root, tvs, edits);',
           '        for (TextView tv : tvs) {',
           '          String n = norm(tv.getText() != null ? tv.getText().toString() : "");',
-          '          if (n.length() >= 3 && (n.equals(targetNorm) || n.contains(targetNorm) || targetNorm.contains(n) || (shortNorm.length() >= 5 && n.contains(shortNorm)))) {',
-          '            if (!n.contains("jogos dispon") && !n.contains("voltar ao jogo") && !n.contains("pesquisar")) {',
+          '          if (n.length() >= 3 && (n.equals(targetNorm) || n.contains(targetNorm) || (shortNorm.length() >= 5 && n.contains(shortNorm)))) {',
+          '            if (!n.contains("jogos dispon") && !n.contains("voltar ao jogo") && !n.contains("pesquisar") && !n.contains("iniciando")) {',
           '              sLastActionTime = now;',
-          '              tapAtRoot(root, tv, true);',
+          '              tapTarget(act, root, tv, true);',
           '              return;',
           '            }',
           '          }',
           '        }',
-          '        if (tvs.size() > 5) {',
-          '          sSearchAttempts++;',
-          '          if (sSearchAttempts >= 2 && !sTypedInSearch && !edits.isEmpty()) {',
+          '        if (!edits.isEmpty()) {',
+          '          sCatalogTicks++;',
+          '          if (sCatalogTicks >= 2 && !sTypedInSearch) {',
           '            sTypedInSearch = true;',
           '            sLastActionTime = now;',
-          '            EditText et = edits.get(0);',
-          '            et.requestFocus();',
-          '            et.setText(sPendingGame);',
-          '            et.onEditorAction(EditorInfo.IME_ACTION_SEARCH);',
-          '            et.onEditorAction(EditorInfo.IME_ACTION_DONE);',
-          '            root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));',
-          '            root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));',
-          '            int[] loc = new int[2]; et.getLocationOnScreen(loc);',
-          '            int[] rLoc = new int[2]; root.getLocationOnScreen(rLoc);',
-          '            float sx = (loc[0] - rLoc[0]) + et.getWidth() + 35f;',
-          '            float sy = (loc[1] - rLoc[1]) + (et.getHeight() / 2.0f);',
-          '            root.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, sx, sy, 0));',
-          '            root.dispatchTouchEvent(MotionEvent.obtain(now, now + 45, MotionEvent.ACTION_UP, sx, sy, 0));',
+          '            typeIntoReactEdit(act, root, edits.get(0), sPendingGame.split(":")[0].trim());',
           '            return;',
           '          }',
           '        }',
@@ -317,7 +364,7 @@ jobs:
         chmod +x gradlew
         ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
 
-    - name: Gerar Mini-APKs de Atalho Direto para a TV
+    - name: Gerar Mini-APKs com Capa Oficial da Xbox Store
       env:
         INPUT_JOGOS: ${{ github.event.inputs.jogos_atalho }}
       run: |
@@ -346,6 +393,26 @@ jobs:
 
         const games = (process.env.JOGOS_LISTA || '').split(',').map(s => s.trim()).filter(Boolean);
 
+        async function fetchGameCoverUrl(title) {
+          // 1. Tentar buscar direto na pagina de busca da Xbox Store Brasil (store-images.s-microsoft.com)
+          try {
+            const searchUrl = `https://www.xbox.com/pt-br/Search/Results?q=${encodeURIComponent(title)}`;
+            const r1 = await fetch(searchUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+            const html = await r1.text();
+            const m = html.match(/https:\/\/store-images\.s-microsoft\.com\/image\/apps\.[a-zA-Z0-9._-]+/);
+            if (m && m[0]) return m[0];
+          } catch (e) {}
+          // 2. Fallback para API de catalogo do Game Pass + Steam/Bing Artwork
+          try {
+            const bingUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(title + ' xbox cover box art official')}&form=HDRSC2`;
+            const r2 = await fetch(bingUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+            const bHtml = await r2.text();
+            const m2 = bHtml.match(/murl&quot;:&quot;(https:\/\/[^&]+?\.(?:jpg|png))/i);
+            if (m2 && m2[1]) return m2[1];
+          } catch (e) {}
+          return null;
+        }
+
         (async () => {
           for (let idx = 0; idx < games.length; idx++) {
             const title = games[idx];
@@ -363,20 +430,9 @@ jobs:
             fs.copyFileSync(fallbackIcon, bannerPath);
 
             try {
-              const url = `https://displaycatalog.mp.microsoft.com/v7.0/productFamilies/autosuggest?market=BR&languages=pt-BR&query=${encodeURIComponent(title)}`;
-              const res = await fetch(url);
-              const data = await res.json();
-              let imgUrl = null;
-              const results = data.Results || [];
-              for (const r of results) {
-                for (const p of (r.Products || [])) {
-                  if (p.Image && p.Image.Url) { imgUrl = p.Image.Url; break; }
-                }
-                if (imgUrl) break;
-              }
+              const imgUrl = await fetchGameCoverUrl(title);
               if (imgUrl) {
-                if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
-                execSync(`curl -sL "${imgUrl}" -o ${work}/raw_img && ffmpeg -y -i ${work}/raw_img -vf "scale=256:256" ${iconPath} && ffmpeg -y -i ${work}/raw_img -vf "scale=320:180" ${bannerPath}`, { stdio: 'ignore' });
+                execSync(`curl -sL -A "Mozilla/5.0" "${imgUrl}" -o ${work}/raw_img && ffmpeg -y -i ${work}/raw_img -vf "scale=256:256:force_original_aspect_ratio=increase,crop=256:256" ${iconPath} && ffmpeg -y -i ${work}/raw_img -vf "scale=320:180:force_original_aspect_ratio=increase,crop=320:180" ${bannerPath}`, { stdio: 'ignore' });
               }
             } catch (e) {}
 
@@ -384,8 +440,8 @@ jobs:
             const manifest = `<?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android"
             package="${pkgName}"
-            android:versionCode="2"
-            android:versionName="1.1">
+            android:versionCode="3"
+            android:versionName="1.2">
             <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="28" />
             <uses-feature android:name="android.software.leanback" android:required="false" />
             <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
