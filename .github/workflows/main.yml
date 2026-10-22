@@ -67,189 +67,7 @@ jobs:
           }
         }
 
-        // 1. Criar TvShortcutHelper.java com argumentos universais (Object... args)
-        const helperPath = 'android/app/src/main/java/com/xstreaming/TvShortcutHelper.java';
-        const helperCode = `package com.xstreaming;
-        import android.app.Activity;
-        import android.content.ComponentName;
-        import android.content.ContentUris;
-        import android.content.ContentValues;
-        import android.content.Context;
-        import android.content.Intent;
-        import android.content.IntentSender;
-        import android.content.SharedPreferences;
-        import android.content.pm.PackageManager;
-        import android.content.pm.ShortcutInfo;
-        import android.content.pm.ShortcutManager;
-        import android.net.Uri;
-        import android.os.Build;
-        import android.os.Handler;
-        import android.os.Looper;
-        import android.widget.Toast;
-        import java.util.Collections;
-
-        public class TvShortcutHelper {
-            public static Context sAppContext;
-
-            public static boolean isSupported(Object... args) {
-                if (args != null) {
-                    for (Object a : args) {
-                        if (a instanceof Context) {
-                            sAppContext = ((Context) a).getApplicationContext();
-                        }
-                    }
-                }
-                return true;
-            }
-
-            public static void handleIncomingIntent(Activity activity) {
-                if (activity == null) return;
-                sAppContext = activity.getApplicationContext();
-                try {
-                    Intent intent = activity.getIntent();
-                    if (intent == null) return;
-                    ComponentName comp = intent.getComponent();
-                    if (comp != null && comp.getClassName() != null && comp.getClassName().startsWith("com.xstreaming.TvGameSlot")) {
-                        String slotKey = comp.getClassName().substring("com.xstreaming.".length());
-                        SharedPreferences prefs = activity.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE);
-                        String savedUri = prefs.getString(slotKey + "_uri", null);
-                        if (savedUri != null) {
-                            Intent gameIntent = Intent.parseUri(savedUri, Intent.URI_INTENT_SCHEME);
-                            activity.setIntent(gameIntent);
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }
-
-            public static boolean pinOnTv(Object... args) {
-                if (Build.VERSION.SDK_INT < 26 || args == null) return true;
-                ShortcutManager sm = null;
-                ShortcutInfo info = null;
-                IntentSender sender = null;
-                for (Object a : args) {
-                    if (a instanceof Context) {
-                        sAppContext = ((Context) a).getApplicationContext();
-                    } else if (a instanceof ShortcutManager) {
-                        sm = (ShortcutManager) a;
-                    } else if (a instanceof ShortcutInfo) {
-                        info = (ShortcutInfo) a;
-                    } else if (a instanceof IntentSender) {
-                        sender = (IntentSender) a;
-                    } else if (a != null && a.getClass().getName().endsWith("ShortcutInfoCompat")) {
-                        try {
-                            Object si = a.getClass().getMethod("toShortcutInfo").invoke(a);
-                            if (si instanceof ShortcutInfo) info = (ShortcutInfo) si;
-                        } catch (Exception ignored) {}
-                    }
-                }
-                if (info == null) return true;
-                try {
-                    if (sm == null && sAppContext != null) {
-                        sm = sAppContext.getSystemService(ShortcutManager.class);
-                    }
-                    if (sm != null) {
-                        sm.addDynamicShortcuts(Collections.singletonList(info));
-                        try { sm.requestPinShortcut(info, sender); } catch (Exception ignored) {}
-                    }
-                } catch (Exception ignored) {}
-                Context ctx = sAppContext;
-                if (ctx != null) {
-                    String id = info.getId() != null ? info.getId() : "game_" + System.currentTimeMillis();
-                    String title = info.getShortLabel() != null ? info.getShortLabel().toString() : "Jogo Xbox";
-                    Intent launchIntent = info.getIntent();
-                    if (launchIntent == null) {
-                        launchIntent = new Intent(ctx, MainActivity.class);
-                        launchIntent.setAction(Intent.ACTION_VIEW);
-                    }
-                    launchIntent.setPackage(ctx.getPackageName());
-                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                    String intentUri = launchIntent.toUri(Intent.URI_INTENT_SCHEME);
-                    String posterUri = "https://compass-ssl.xbox.com/assets/16/9a/169a7d4c-2560-4f42-b197-11257b42b93e.jpg";
-                    publishToWatchNext(ctx, id, title, posterUri, intentUri);
-                    publishToTvChannel(ctx, id, title, posterUri, intentUri);
-                    enableAppRowSlot(ctx, title, intentUri);
-                    final String finalTitle = title;
-                    final Context finalCtx = ctx;
-                    new Handler(Looper.getMainLooper()).post(new Runnable() {
-                        @Override
-                        public void run() {
-                            Toast.makeText(finalCtx, "Atalho de '" + finalTitle + "' adicionado na Tela Inicial da TV!", Toast.LENGTH_LONG).show();
-                        }
-                    });
-                }
-                return true;
-            }
-
-            private static void publishToWatchNext(Context ctx, String id, String title, String posterUri, String intentUri) {
-                try {
-                    ContentValues values = new ContentValues();
-                    values.put("type", 0);
-                    values.put("watch_next_type", 0);
-                    values.put("last_engagement_time_utc_millis", System.currentTimeMillis());
-                    values.put("title", title);
-                    values.put("short_description", "Xbox Cloud Gaming - Abrir jogo direto");
-                    values.put("poster_art_uri", posterUri);
-                    values.put("poster_art_aspect_ratio", 4);
-                    values.put("intent_uri", intentUri);
-                    values.put("internal_provider_id", id);
-                    ctx.getContentResolver().insert(Uri.parse("content://android.media.tv/watch_next_program"), values);
-                } catch (Exception ignored) {}
-            }
-
-            private static void publishToTvChannel(Context ctx, String id, String title, String posterUri, String intentUri) {
-                try {
-                    SharedPreferences prefs = ctx.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE);
-                    long channelId = prefs.getLong("xbox_channel_id", -1L);
-                    if (channelId == -1L) {
-                        ContentValues cv = new ContentValues();
-                        cv.put("type", "TYPE_PREVIEW");
-                        cv.put("display_name", "Meus Jogos Xbox");
-                        cv.put("description", "Atalhos de jogos do Xbox Cloud Gaming");
-                        Intent mainIntent = new Intent(ctx, MainActivity.class);
-                        cv.put("app_link_intent_uri", mainIntent.toUri(Intent.URI_INTENT_SCHEME));
-                        Uri chUri = ctx.getContentResolver().insert(Uri.parse("content://android.media.tv/channel"), cv);
-                        if (chUri != null) {
-                            channelId = ContentUris.parseId(chUri);
-                            prefs.edit().putLong("xbox_channel_id", channelId).apply();
-                            try {
-                                Class.forName("android.media.tv.TvContract")
-                                    .getMethod("requestChannelBrowsable", Context.class, long.class)
-                                    .invoke(null, ctx, channelId);
-                            } catch (Exception ignored) {}
-                        }
-                    }
-                    if (channelId != -1L) {
-                        ContentValues pv = new ContentValues();
-                        pv.put("channel_id", channelId);
-                        pv.put("type", 0);
-                        pv.put("title", title);
-                        pv.put("short_description", "Xbox Cloud Gaming");
-                        pv.put("poster_art_uri", posterUri);
-                        pv.put("poster_art_aspect_ratio", 4);
-                        pv.put("intent_uri", intentUri);
-                        pv.put("internal_provider_id", id);
-                        pv.put("weight", 100);
-                        ctx.getContentResolver().insert(Uri.parse("content://android.media.tv/preview_program"), pv);
-                    }
-                } catch (Exception ignored) {}
-            }
-
-            private static void enableAppRowSlot(Context ctx, String title, String intentUri) {
-                try {
-                    SharedPreferences prefs = ctx.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE);
-                    int nextSlot = (prefs.getInt("last_slot", 0) % 5) + 1;
-                    String slotKey = "TvGameSlot" + nextSlot;
-                    prefs.edit().putInt("last_slot", nextSlot).putString(slotKey + "_uri", intentUri).putString(slotKey + "_title", title).apply();
-                    ComponentName comp = new ComponentName(ctx.getPackageName(), "com.xstreaming." + slotKey);
-                    ctx.getPackageManager().setComponentEnabledSetting(comp, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);
-                } catch (Exception ignored) {}
-            }
-        }
-        `;
-        fs.mkdirSync(path.dirname(helperPath), { recursive: true });
-        fs.writeFileSync(helperPath, helperCode, 'utf8');
-
-        // 2. Otimizar MediaCodec, proteger System.loadLibrary (Nano/FSR/LSFG) e conectar ShortcutManager
+        // Otimizar MediaCodec, System.loadLibrary e ShortcutManager
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java') || p.endsWith('TvShortcutHelper.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -267,7 +85,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 3. Desativar Controles Virtuais, FSR, FrameGen e Giroscopio (Zero GPU / Zero RAM)
+        // Desativar Controles Virtuais, FSR, FrameGen e Giroscopio
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -286,7 +104,7 @@ jobs:
           });
         });
 
-        // 4. Esvaziar JS legado de WebView e reduzir Splash PNGs para 68 bytes
+        // Esvaziar JS legado e reduzir Splash PNGs
         walk('android/app/src/main/assets/stream/assets', (p) => {
           if (p.includes('legacy') && p.endsWith('.js')) fs.writeFileSync(p, '', 'utf8');
         });
@@ -301,7 +119,7 @@ jobs:
           });
         });
 
-        // 5. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
+        // Aplicar Tema play.xbox.com (#0e0e0e e #107C10)
         const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4'];
         const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e'];
         walk('src', (p) => {
@@ -317,7 +135,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 6. Adicionar permissoes e Slots de Atalhos LEANBACK_LAUNCHER no AndroidManifest.xml
+        // Adicionar permissoes e Slots LEANBACK_LAUNCHER no AndroidManifest.xml
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -337,18 +155,47 @@ jobs:
           fs.writeFileSync(manPath, man, 'utf8');
         }
 
-        // 7. Injetar TvShortcutHelper e Filtro de 1000Hz do Dongle GameSir na MainActivity.java
+        // Injetar handleIncomingIntent na MainActivity.java
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
           code = code.replace(/(super\.onCreate\s*\([^)]*\)\s*;)/, '$1 com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
           code = code.replace(/(super\.onNewIntent\s*\([^)]*\)\s*;)/, '$1 com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
-          if (!code.includes('_lastMotionTime') && !code.includes('dispatchGenericMotionEvent')) {
-            const filterMethod = `
-            private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;
-            private long _lastMotionTime = 0L;
-            private boolean _wasCentered = true;
-            @Override
-            public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
-                com.xstreaming.TvShortcutHelper.sAppContext = getApplicationContext();
-                if (event != null && (event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JO
+          fs.writeFileSync(mainAct, code, 'utf8');
+        }
+        EOF
+
+    - name: Configure Signing and Disable Nano Rust Build
+      run: |
+        cat << 'EOF' > /tmp/init.gradle
+        allprojects {
+            tasks.configureEach { task ->
+                if (task.name.contains("NanoRust")) {
+                    task.enabled = false
+                }
+            }
+            afterEvaluate { project ->
+                if (project.hasProperty('android')) {
+                    project.android {
+                        buildTypes {
+                            release {
+                                signingConfig signingConfigs.debug
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        EOF
+
+    - name: Build Release APK
+      run: |
+        cd android
+        chmod +x gradlew
+        ./gradlew assembleRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: XStreaming-TV-UltraLite-APK
+        path: android/app/build/outputs/apk/**/*.apk
