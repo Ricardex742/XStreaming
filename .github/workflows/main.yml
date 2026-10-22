@@ -58,7 +58,7 @@ jobs:
           done
         fi
 
-    - name: Aplicar Ultra-Lite, Tema Xbox e Receptor de Mini-APKs
+    - name: Aplicar Ultra-Lite, Tema Xbox e Auto-Play Direto nos Jogos
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -80,13 +80,21 @@ jobs:
           'import android.content.*;',
           'import android.os.*;',
           'import android.view.*;',
+          'import android.view.accessibility.AccessibilityNodeInfo;',
+          'import android.view.inputmethod.EditorInfo;',
           'import android.widget.*;',
           'import java.lang.reflect.Field;',
           'import java.util.*;',
           'public class TvShortcutHelper {',
           '  public static String sPendingGame = null;',
           '  private static boolean sLoopStarted = false;',
-          '  private static long sLastClickTime = 0L;',
+          '  private static int sSearchAttempts = 0;',
+          '  private static boolean sTypedInSearch = false;',
+          '  private static long sLastActionTime = 0L;',
+          '  private static String norm(String s) {',
+          '    if (s == null) return "";',
+          '    return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]+", " ").replaceAll("\\\\s+", " ").trim();',
+          '  }',
           '  public static void handleIncomingIntent(final Activity act) {',
           '    if (act == null) return;',
           '    try {',
@@ -95,8 +103,10 @@ jobs:
           '        String t = i.getStringExtra("game_title");',
           '        if (t != null && !t.isEmpty()) {',
           '          sPendingGame = t.trim();',
+          '          sSearchAttempts = 0;',
+          '          sTypedInSearch = false;',
           '          i.removeExtra("game_title");',
-          '          Toast.makeText(act, "Abrindo " + sPendingGame + "...", Toast.LENGTH_LONG).show();',
+          '          Toast.makeText(act, "Iniciando automaticamente: " + sPendingGame, Toast.LENGTH_LONG).show();',
           '        }',
           '      }',
           '    } catch (Exception ignored) {}',
@@ -104,8 +114,8 @@ jobs:
           '      sLoopStarted = true;',
           '      final Handler h = new Handler(Looper.getMainLooper());',
           '      h.postDelayed(new Runnable() {',
-          '        @Override public void run() { autoLaunchLoop(act); h.postDelayed(this, 450); }',
-          '      }, 600);',
+          '        @Override public void run() { autoLaunchLoop(act); h.postDelayed(this, 600); }',
+          '      }, 700);',
           '    }',
           '  }',
           '  private static List<View> getAllRootViews(Activity act) {',
@@ -120,51 +130,98 @@ jobs:
           '    if (list.isEmpty() && act.getWindow() != null) list.add(act.getWindow().getDecorView());',
           '    return list;',
           '  }',
-          '  private static void findTexts(View v, List<TextView> out) {',
+          '  private static void collectViews(View v, List<TextView> texts, List<EditText> edits) {',
           '    if (v == null || v.getVisibility() != View.VISIBLE) return;',
-          '    if (v instanceof TextView) out.add((TextView) v);',
+          '    if (v instanceof EditText) edits.add((EditText) v);',
+          '    else if (v instanceof TextView) texts.add((TextView) v);',
           '    else if (v instanceof ViewGroup) {',
           '      ViewGroup vg = (ViewGroup) v;',
-          '      for (int i = 0; i < vg.getChildCount(); i++) findTexts(vg.getChildAt(i), out);',
+          '      for (int i = 0; i < vg.getChildCount(); i++) collectViews(vg.getChildAt(i), texts, edits);',
           '    }',
           '  }',
-          '  private static void triggerTap(View v) {',
-          '    View cur = v;',
-          '    while (cur != null) {',
-          '      if (cur.isClickable() || cur.isFocusable()) {',
-          '        cur.requestFocus();',
-          '        cur.performClick();',
-          '        long now = SystemClock.uptimeMillis();',
-          '        cur.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 10f, 10f, 0));',
-          '        cur.dispatchTouchEvent(MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP, 10f, 10f, 0));',
-          '        return;',
+          '  private static void tapAtRoot(View root, View target, boolean tapAboveCover) {',
+          '    try {',
+          '      View cur = target;',
+          '      while (cur != null) {',
+          '        try { cur.performAccessibilityAction(AccessibilityNodeInfo.ACTION_CLICK, null); } catch (Exception ignored) {}',
+          '        if (cur.isFocusable()) cur.requestFocus();',
+          '        ViewParent p = cur.getParent();',
+          '        cur = (p instanceof View) ? (View) p : null;',
           '      }',
-          '      ViewParent p = cur.getParent();',
-          '      cur = (p instanceof View) ? (View) p : null;',
-          '    }',
+          '      int[] loc = new int[2];',
+          '      target.getLocationOnScreen(loc);',
+          '      int[] rLoc = new int[2];',
+          '      root.getLocationOnScreen(rLoc);',
+          '      float x = (loc[0] - rLoc[0]) + (target.getWidth() / 2.0f);',
+          '      float y = (loc[1] - rLoc[1]) + (target.getHeight() / 2.0f);',
+          '      long now = SystemClock.uptimeMillis();',
+          '      root.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0));',
+          '      root.dispatchTouchEvent(MotionEvent.obtain(now, now + 45, MotionEvent.ACTION_UP, x, y, 0));',
+          '      if (tapAboveCover && y > 90f) {',
+          '        float cy = y - 75f;',
+          '        root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 60, MotionEvent.ACTION_DOWN, x, cy, 0));',
+          '        root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 105, MotionEvent.ACTION_UP, x, cy, 0));',
+          '      }',
+          '      root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER));',
+          '      root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER));',
+          '    } catch (Exception ignored) {}',
           '  }',
           '  private static void autoLaunchLoop(Activity act) {',
           '    if (sPendingGame == null) return;',
           '    long now = SystemClock.uptimeMillis();',
-          '    if (now - sLastClickTime < 1500L) return;',
+          '    if (now - sLastActionTime < 1300L) return;',
           '    try {',
-          '      String target = sPendingGame.toLowerCase(Locale.ROOT);',
-          '      String shortTarget = target.split(":")[0].trim();',
-          '      for (View root : getAllRootViews(act)) {',
-          '        List<TextView> tvs = new ArrayList<>(); findTexts(root, tvs);',
+          '      String targetNorm = norm(sPendingGame);',
+          '      String shortNorm = norm(sPendingGame.split(":")[0]);',
+          '      List<View> roots = getAllRootViews(act);',
+          '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
+          '        View root = roots.get(rIdx);',
+          '        List<TextView> tvs = new ArrayList<>();',
+          '        List<EditText> edits = new ArrayList<>();',
+          '        collectViews(root, tvs, edits);',
           '        for (TextView tv : tvs) {',
-          '          String txt = tv.getText() != null ? tv.getText().toString().trim() : "";',
-          '          if (txt.equalsIgnoreCase("Iniciar jogo na nuvem") || txt.equalsIgnoreCase("Start cloud game")) {',
-          '            sPendingGame = null; sLastClickTime = now;',
-          '            triggerTap(tv);',
+          '          String raw = tv.getText() != null ? tv.getText().toString().trim() : "";',
+          '          if (raw.equalsIgnoreCase("Iniciar jogo na nuvem") || raw.equalsIgnoreCase("Start cloud game")) {',
+          '            sPendingGame = null;',
+          '            sLastActionTime = now;',
+          '            tapAtRoot(root, tv, false);',
           '            return;',
           '          }',
           '        }',
+          '      }',
+          '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
+          '        View root = roots.get(rIdx);',
+          '        List<TextView> tvs = new ArrayList<>();',
+          '        List<EditText> edits = new ArrayList<>();',
+          '        collectViews(root, tvs, edits);',
           '        for (TextView tv : tvs) {',
-          '          String txt = tv.getText() != null ? tv.getText().toString().trim().toLowerCase(Locale.ROOT) : "";',
-          '          if (!txt.isEmpty() && (txt.equals(target) || txt.contains(target) || (shortTarget.length() >= 4 && txt.contains(shortTarget)))) {',
-          '            sLastClickTime = now;',
-          '            triggerTap(tv);',
+          '          String n = norm(tv.getText() != null ? tv.getText().toString() : "");',
+          '          if (n.length() >= 3 && (n.equals(targetNorm) || n.contains(targetNorm) || targetNorm.contains(n) || (shortNorm.length() >= 5 && n.contains(shortNorm)))) {',
+          '            if (!n.contains("jogos dispon") && !n.contains("voltar ao jogo") && !n.contains("pesquisar")) {',
+          '              sLastActionTime = now;',
+          '              tapAtRoot(root, tv, true);',
+          '              return;',
+          '            }',
+          '          }',
+          '        }',
+          '        if (tvs.size() > 5) {',
+          '          sSearchAttempts++;',
+          '          if (sSearchAttempts >= 2 && !sTypedInSearch && !edits.isEmpty()) {',
+          '            sTypedInSearch = true;',
+          '            sLastActionTime = now;',
+          '            EditText et = edits.get(0);',
+          '            et.requestFocus();',
+          '            et.setText(sPendingGame);',
+          '            et.onEditorAction(EditorInfo.IME_ACTION_SEARCH);',
+          '            et.onEditorAction(EditorInfo.IME_ACTION_DONE);',
+          '            root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));',
+          '            root.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));',
+          '            int[] loc = new int[2]; et.getLocationOnScreen(loc);',
+          '            int[] rLoc = new int[2]; root.getLocationOnScreen(rLoc);',
+          '            float sx = (loc[0] - rLoc[0]) + et.getWidth() + 35f;',
+          '            float sy = (loc[1] - rLoc[1]) + (et.getHeight() / 2.0f);',
+          '            root.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, sx, sy, 0));',
+          '            root.dispatchTouchEvent(MotionEvent.obtain(now, now + 45, MotionEvent.ACTION_UP, sx, sy, 0));',
           '            return;',
           '          }',
           '        }',
@@ -210,7 +267,7 @@ jobs:
           let man = fs.readFileSync(manPath, 'utf8');
           if (!man.includes('com.xstreaming.LAUNCH_GAME')) {
             man = man.replace(
-              '<category android:name="android.intent.category.LAUNCHER" />',
+              /<category\s+android:name="android\.intent\.category\.LAUNCHER"\s*\/>/,
               '<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />\n            </intent-filter>\n            <intent-filter>\n                <action android:name="com.xstreaming.LAUNCH_GAME" />\n                <category android:name="android.intent.category.DEFAULT" />'
             );
           }
@@ -221,7 +278,12 @@ jobs:
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
           code = code.replace(/(super\.onCreate\s*\([^)]*\)\s*;)/, '$1 com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
-          code = code.replace(/(super\.onNewIntent\s*\([^)]*\)\s*;)/, '$1 setIntent(intent); com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
+          if (code.includes('onNewIntent')) {
+            code = code.replace(/(super\.onNewIntent\s*\(\s*(\w+)\s*\)\s*;)/, '$1 setIntent($2); com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
+          } else {
+            const lastB = code.lastIndexOf('}');
+            code = code.slice(0, lastB) + '\n    @Override public void onNewIntent(android.content.Intent intent) { super.onNewIntent(intent); setIntent(intent); com.xstreaming.TvShortcutHelper.handleIncomingIntent(this); }\n}\n';
+          }
           fs.writeFileSync(mainAct, code, 'utf8');
         }
         EOF
@@ -259,7 +321,6 @@ jobs:
       env:
         INPUT_JOGOS: ${{ github.event.inputs.jogos_atalho }}
       run: |
-        # LISTA DE JOGOS PARA CRIAR MINI-APK (Separe por virgula se quiser adicionar mais):
         JOGOS_PADRAO="EA Sports FC 26, Gears of War: E-Day, Call of Duty: Modern Warfare III"
         export JOGOS_LISTA="${INPUT_JOGOS:-$JOGOS_PADRAO}"
 
@@ -323,9 +384,9 @@ jobs:
             const manifest = `<?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android"
             package="${pkgName}"
-            android:versionCode="1"
-            android:versionName="1.0">
-            <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="31" />
+            android:versionCode="2"
+            android:versionName="1.1">
+            <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="28" />
             <uses-feature android:name="android.software.leanback" android:required="false" />
             <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
             <application
@@ -350,6 +411,7 @@ jobs:
             const javaTitle = title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
             const javaCode = `package ${pkgName};
         import android.app.Activity;
+        import android.content.ComponentName;
         import android.content.Intent;
         import android.os.Bundle;
         import android.widget.Toast;
@@ -359,21 +421,13 @@ jobs:
                 super.onCreate(s);
                 String t = "${javaTitle}";
                 try {
-                    Intent i = new Intent("com.xstreaming.LAUNCH_GAME");
+                    Intent i = new Intent(Intent.ACTION_MAIN);
+                    i.setComponent(new ComponentName("com.xstreaming", "com.xstreaming.MainActivity"));
                     i.putExtra("game_title", t);
-                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
                     startActivity(i);
                 } catch (Exception e) {
-                    try {
-                        Intent i2 = getPackageManager().getLaunchIntentForPackage("com.xstreaming");
-                        if (i2 != null) {
-                            i2.putExtra("game_title", t);
-                            i2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                            startActivity(i2);
-                        } else {
-                            Toast.makeText(this, "Instale o XStreaming primeiro!", Toast.LENGTH_LONG).show();
-                        }
-                    } catch (Exception ignored) {}
+                    Toast.makeText(this, "Instale o XStreaming primeiro!", Toast.LENGTH_LONG).show();
                 }
                 finish();
             }
