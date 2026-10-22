@@ -18,7 +18,6 @@ jobs:
         git remote add upstream https://github.com/Geocld/XStreaming.git || true
         git fetch upstream main
         git checkout upstream/main -- android/ package.json yarn.lock src/
-        git checkout HEAD -- android/app/src/main/java/com/xstreaming/TvShortcutHelper.java || true
         echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
 
@@ -38,7 +37,8 @@ jobs:
       run: |
         set +e
         set +o pipefail
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
         exit 0
 
     - name: Install Dependencies
@@ -53,99 +53,186 @@ jobs:
           done
         fi
 
-    - name: Aplicar Ultra-Lite, Tema play.xbox.com e Atalhos na TV
+    - name: Aplicar Ultra-Lite, Tema Xbox e Botao de Atalho ao Lado dos Favoritos
       run: |
         node << 'EOF'
         const fs = require('fs');
         const path = require('path');
 
-        function walk(dir, callback) {
+        function walk(dir, cb) {
           if (!fs.existsSync(dir)) return;
           for (const f of fs.readdirSync(dir)) {
             const p = path.join(dir, f);
-            if (fs.statSync(p).isDirectory()) walk(p, callback);
-            else callback(p);
+            if (fs.statSync(p).isDirectory()) walk(p, cb);
+            else cb(p);
           }
         }
 
-        // Caso o TvShortcutHelper.java tenha sido limpo pelo git checkout, recria automaticamente
         const helperPath = 'android/app/src/main/java/com/xstreaming/TvShortcutHelper.java';
-        if (!fs.existsSync(helperPath)) {
-          const lines = [
-            'package com.xstreaming;',
-            'import android.app.Activity;',
-            'import android.content.*;',
-            'import android.content.pm.*;',
-            'import android.net.Uri;',
-            'import android.os.*;',
-            'import android.widget.Toast;',
-            'import java.util.Collections;',
-            'public class TvShortcutHelper {',
-            '  public static Context sAppContext;',
-            '  public static boolean isSupported(Object... args) {',
-            '    if (args != null) for (Object a : args) if (a instanceof Context) sAppContext = ((Context) a).getApplicationContext();',
-            '    return true;',
-            '  }',
-            '  public static void handleIncomingIntent(Activity act) {',
-            '    if (act == null) return;',
-            '    sAppContext = act.getApplicationContext();',
-            '    try {',
-            '      Intent i = act.getIntent();',
-            '      if (i != null && i.getComponent() != null && i.getComponent().getClassName().startsWith("com.xstreaming.TvGameSlot")) {',
-            '        String k = i.getComponent().getClassName().substring("com.xstreaming.".length());',
-            '        String u = act.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE).getString(k + "_uri", null);',
-            '        if (u != null) act.setIntent(Intent.parseUri(u, Intent.URI_INTENT_SCHEME));',
-            '      }',
-            '    } catch (Exception ignored) {}',
-            '  }',
-            '  public static boolean pinOnTv(Object... args) {',
-            '    if (Build.VERSION.SDK_INT < 26 || args == null) return true;',
-            '    ShortcutManager sm = null; ShortcutInfo info = null; IntentSender sender = null;',
-            '    for (Object a : args) {',
-            '      if (a instanceof Context) sAppContext = ((Context) a).getApplicationContext();',
-            '      else if (a instanceof ShortcutManager) sm = (ShortcutManager) a;',
-            '      else if (a instanceof ShortcutInfo) info = (ShortcutInfo) a;',
-            '      else if (a instanceof IntentSender) sender = (IntentSender) a;',
-            '      else if (a != null && a.getClass().getName().endsWith("ShortcutInfoCompat")) {',
-            '        try { info = (ShortcutInfo) a.getClass().getMethod("toShortcutInfo").invoke(a); } catch (Exception ignored) {}',
-            '      }',
-            '    }',
-            '    if (info == null) return true;',
-            '    try {',
-            '      if (sm == null && sAppContext != null) sm = sAppContext.getSystemService(ShortcutManager.class);',
-            '      if (sm != null) { sm.addDynamicShortcuts(Collections.singletonList(info)); try { sm.requestPinShortcut(info, sender); } catch (Exception ignored) {} }',
-            '    } catch (Exception ignored) {}',
-            '    final Context ctx = sAppContext;',
-            '    if (ctx != null) {',
-            '      final String title = info.getShortLabel() != null ? info.getShortLabel().toString() : "Jogo Xbox";',
-            '      Intent li = info.getIntent() != null ? info.getIntent() : new Intent(ctx, MainActivity.class).setAction(Intent.ACTION_VIEW);',
-            '      li.setPackage(ctx.getPackageName());',
-            '      li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);',
-            '      String uri = li.toUri(Intent.URI_INTENT_SCHEME);',
-            '      try {',
-            '        ContentValues v = new ContentValues();',
-            '        v.put("type", 0); v.put("watch_next_type", 0); v.put("last_engagement_time_utc_millis", System.currentTimeMillis());',
-            '        v.put("title", title); v.put("short_description", "Xbox Cloud Gaming");',
-            '        v.put("poster_art_uri", "https://compass-ssl.xbox.com/assets/16/9a/169a7d4c-2560-4f42-b197-11257b42b93e.jpg");',
-            '        v.put("poster_art_aspect_ratio", 4); v.put("intent_uri", uri); v.put("internal_provider_id", info.getId());',
-            '        ctx.getContentResolver().insert(Uri.parse("content://android.media.tv/watch_next_program"), v);',
-            '      } catch (Exception ignored) {}',
-            '      try {',
-            '        SharedPreferences p = ctx.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE);',
-            '        int s = (p.getInt("last_slot", 0) % 5) + 1; String sk = "TvGameSlot" + s;',
-            '        p.edit().putInt("last_slot", s).putString(sk + "_uri", uri).putString(sk + "_title", title).apply();',
-            '        ctx.getPackageManager().setComponentEnabledSetting(new ComponentName(ctx.getPackageName(), "com.xstreaming." + sk), PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);',
-            '      } catch (Exception ignored) {}',
-            '      new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(ctx, "Atalho adicionado na Tela Inicial da TV: " + title, Toast.LENGTH_LONG).show());',
-            '    }',
-            '    return true;',
-            '  }',
-            '}'
-          ];
-          fs.writeFileSync(helperPath, lines.join('\n'), 'utf8');
-        }
+        const lines = [
+          'package com.xstreaming;',
+          'import android.app.Activity;',
+          'import android.content.*;',
+          'import android.content.pm.*;',
+          'import android.graphics.*;',
+          'import android.graphics.drawable.GradientDrawable;',
+          'import android.graphics.drawable.Icon;',
+          'import android.net.Uri;',
+          'import android.os.*;',
+          'import android.view.*;',
+          'import android.widget.*;',
+          'import java.lang.reflect.Field;',
+          'import java.util.*;',
+          'public class TvShortcutHelper {',
+          '  public static Context sAppContext;',
+          '  private static String sActiveGameTitle = null;',
+          '  private static boolean sLoopStarted = false;',
+          '  public static boolean isSupported(Object... args) { return true; }',
+          '  public static void handleIncomingIntent(final Activity act) {',
+          '    if (act == null) return;',
+          '    sAppContext = act.getApplicationContext();',
+          '    try {',
+          '      Intent i = act.getIntent();',
+          '      if (i != null && i.getComponent() != null && i.getComponent().getClassName().startsWith("com.xstreaming.TvGameSlot")) {',
+          '        String k = i.getComponent().getClassName().substring("com.xstreaming.".length());',
+          '        String u = act.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE).getString(k + "_uri", null);',
+          '        if (u != null) act.setIntent(Intent.parseUri(u, Intent.URI_INTENT_SCHEME));',
+          '      }',
+          '    } catch (Exception ignored) {}',
+          '    if (!sLoopStarted) {',
+          '      sLoopStarted = true;',
+          '      final Handler h = new Handler(Looper.getMainLooper());',
+          '      h.postDelayed(new Runnable() {',
+          '        @Override public void run() { syncOverlay(act); h.postDelayed(this, 300); }',
+          '      }, 500);',
+          '    }',
+          '  }',
+          '  public static boolean onKey(Activity act, KeyEvent ev) {',
+          '    if (ev != null && ev.getAction() == KeyEvent.ACTION_DOWN && ev.getKeyCode() == KeyEvent.KEYCODE_BUTTON_X && sActiveGameTitle != null) {',
+          '      createShortcutForTitle(act, sActiveGameTitle);',
+          '      return true;',
+          '    }',
+          '    return false;',
+          '  }',
+          '  private static List<View> getAllRootViews(Activity act) {',
+          '    List<View> list = new ArrayList<>();',
+          '    try {',
+          '      Class<?> wmg = Class.forName("android.view.WindowManagerGlobal");',
+          '      Object inst = wmg.getMethod("getInstance").invoke(null);',
+          '      Field f = wmg.getDeclaredField("mViews"); f.setAccessible(true);',
+          '      List<?> views = (List<?>) f.get(inst);',
+          '      if (views != null) for (Object o : views) if (o instanceof View) list.add((View) o);',
+          '    } catch (Exception ignored) {}',
+          '    if (list.isEmpty() && act.getWindow() != null) list.add(act.getWindow().getDecorView());',
+          '    return list;',
+          '  }',
+          '  private static void findTexts(View v, List<TextView> out) {',
+          '    if (v == null || v.getVisibility() != View.VISIBLE) return;',
+          '    if ("tv_shortcut_btn".equals(v.getTag())) return;',
+          '    if (v instanceof TextView) out.add((TextView) v);',
+          '    else if (v instanceof ViewGroup) {',
+          '      ViewGroup vg = (ViewGroup) v;',
+          '      for (int i = 0; i < vg.getChildCount(); i++) findTexts(vg.getChildAt(i), out);',
+          '    }',
+          '  }',
+          '  private static void syncOverlay(final Activity act) {',
+          '    try {',
+          '      ViewGroup targetRoot = null; String foundTitle = null;',
+          '      for (View root : getAllRootViews(act)) {',
+          '        List<TextView> tvs = new ArrayList<>(); findTexts(root, tvs);',
+          '        boolean hasStartBtn = false;',
+          '        for (TextView tv : tvs) {',
+          '          String t = tv.getText() != null ? tv.getText().toString().trim() : "";',
+          '          if (t.equalsIgnoreCase("Iniciar jogo na nuvem") || t.equalsIgnoreCase("Start cloud game")) { hasStartBtn = true; break; }',
+          '        }',
+          '        if (hasStartBtn && root instanceof ViewGroup) {',
+          '          targetRoot = (ViewGroup) root;',
+          '          for (TextView tv : tvs) {',
+          '            String t = tv.getText() != null ? tv.getText().toString().trim() : "";',
+          '            if (t.length() > 1 && !t.equalsIgnoreCase("Iniciar jogo na nuvem") && !t.equalsIgnoreCase("Voltar")) { foundTitle = t; break; }',
+          '          }',
+          '          break;',
+          '        }',
+          '      }',
+          '      sActiveGameTitle = foundTitle;',
+          '      for (View root : getAllRootViews(act)) {',
+          '        if (root instanceof ViewGroup) {',
+          '          View old = root.findViewWithTag("tv_shortcut_btn");',
+          '          if (old != null && root != targetRoot) ((ViewGroup) root).removeView(old);',
+          '        }',
+          '      }',
+          '      if (targetRoot != null && foundTitle != null) {',
+          '        TextView btn = targetRoot.findViewWithTag("tv_shortcut_btn");',
+          '        if (btn == null) {',
+          '          btn = new TextView(act); btn.setTag("tv_shortcut_btn");',
+          '          btn.setText("📌 Atalho (X)"); btn.setTextColor(Color.WHITE); btn.setTextSize(14f);',
+          '          btn.setPadding(28, 14, 28, 14); btn.setFocusable(true); btn.setClickable(true);',
+          '          final GradientDrawable bg = new GradientDrawable(); bg.setColor(Color.parseColor("#107C10")); bg.setCornerRadius(40f); bg.setStroke(3, Color.WHITE);',
+          '          btn.setBackground(bg);',
+          '          btn.setOnFocusChangeListener((v, hasFocus) -> { bg.setColor(Color.parseColor(hasFocus ? "#16a316" : "#107C10")); bg.setStroke(hasFocus ? 5 : 2, Color.WHITE); });',
+          '          btn.setOnClickListener(v -> { if (sActiveGameTitle != null) createShortcutForTitle(act, sActiveGameTitle); });',
+          '          int w = targetRoot.getWidth() > 0 ? targetRoot.getWidth() : 1920;',
+          '          int h = targetRoot.getHeight() > 0 ? targetRoot.getHeight() : 1080;',
+          '          FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);',
+          '          lp.topMargin = (int)(h * 0.185f); lp.rightMargin = (int)(w * 0.085f);',
+          '          targetRoot.addView(btn, lp);',
+          '        }',
+          '      }',
+          '    } catch (Exception ignored) {}',
+          '  }',
+          '  public static void createShortcutForTitle(Activity act, String title) {',
+          '    if (act == null || Build.VERSION.SDK_INT < 26) return;',
+          '    try {',
+          '      ShortcutManager sm = act.getSystemService(ShortcutManager.class);',
+          '      Intent li = new Intent(act, MainActivity.class).setAction(Intent.ACTION_VIEW);',
+          '      li.putExtra("game_title", title);',
+          '      String id = "xbox_" + Math.abs(title.hashCode());',
+          '      ShortcutInfo info = new ShortcutInfo.Builder(act, id).setShortLabel(title).setLongLabel("Jogar " + title).setIcon(Icon.createWithResource(act, act.getApplicationInfo().icon)).setIntent(li).build();',
+          '      pinOnTv(act, sm, info, null);',
+          '    } catch (Exception ignored) {}',
+          '  }',
+          '  public static boolean pinOnTv(Object... args) {',
+          '    if (Build.VERSION.SDK_INT < 26 || args == null) return true;',
+          '    ShortcutManager sm = null; ShortcutInfo info = null; IntentSender sender = null;',
+          '    for (Object a : args) {',
+          '      if (a instanceof Context) sAppContext = ((Context) a).getApplicationContext();',
+          '      else if (a instanceof ShortcutManager) sm = (ShortcutManager) a;',
+          '      else if (a instanceof ShortcutInfo) info = (ShortcutInfo) a;',
+          '      else if (a instanceof IntentSender) sender = (IntentSender) a;',
+          '    }',
+          '    if (info == null) return true;',
+          '    try {',
+          '      if (sm == null && sAppContext != null) sm = sAppContext.getSystemService(ShortcutManager.class);',
+          '      if (sm != null) { sm.addDynamicShortcuts(Collections.singletonList(info)); try { sm.requestPinShortcut(info, sender); } catch (Exception ignored) {} }',
+          '    } catch (Exception ignored) {}',
+          '    final Context ctx = sAppContext;',
+          '    if (ctx != null) {',
+          '      final String title = info.getShortLabel() != null ? info.getShortLabel().toString() : "Jogo Xbox";',
+          '      Intent li = info.getIntent() != null ? info.getIntent() : new Intent(ctx, MainActivity.class).setAction(Intent.ACTION_VIEW);',
+          '      li.setPackage(ctx.getPackageName()); li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);',
+          '      String uri = li.toUri(Intent.URI_INTENT_SCHEME);',
+          '      try {',
+          '        ContentValues v = new ContentValues();',
+          '        v.put("type", 0); v.put("watch_next_type", 0); v.put("last_engagement_time_utc_millis", System.currentTimeMillis());',
+          '        v.put("title", title); v.put("short_description", "Xbox Cloud Gaming");',
+          '        v.put("poster_art_uri", "https://compass-ssl.xbox.com/assets/16/9a/169a7d4c-2560-4f42-b197-11257b42b93e.jpg");',
+          '        v.put("poster_art_aspect_ratio", 4); v.put("intent_uri", uri); v.put("internal_provider_id", info.getId());',
+          '        ctx.getContentResolver().insert(Uri.parse("content://android.media.tv/watch_next_program"), v);',
+          '      } catch (Exception ignored) {}',
+          '      try {',
+          '        SharedPreferences p = ctx.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE);',
+          '        int s = (p.getInt("last_slot", 0) % 5) + 1; String sk = "TvGameSlot" + s;',
+          '        p.edit().putInt("last_slot", s).putString(sk + "_uri", uri).putString(sk + "_title", title).apply();',
+          '        ctx.getPackageManager().setComponentEnabledSetting(new ComponentName(ctx.getPackageName(), "com.xstreaming." + sk), PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);',
+          '      } catch (Exception ignored) {}',
+          '      new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(ctx, "Atalho criado na Tela Inicial da TV: " + title, Toast.LENGTH_LONG).show());',
+          '    }',
+          '    return true;',
+          '  }',
+          '}'
+        ];
+        fs.writeFileSync(helperPath, lines.join('\n'), 'utf8');
 
-        // Otimizar MediaCodec, System.loadLibrary e ShortcutManager
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java') || p.endsWith('TvShortcutHelper.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -154,16 +241,9 @@ jobs:
           c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/System\.loadLibrary\s*\(\s*("[^"]+")\s*\)\s*;/g, 'try { System.loadLibrary($1); } catch (Throwable ignored) {}');
-          if (c.includes('ShortcutManager')) {
-            c = c.replace(/\b(?!this\b)([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'com.xstreaming.TvShortcutHelper.isSupported($1)');
-            c = c.replace(/\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\(/g, 'com.xstreaming.TvShortcutHelper.isSupported(');
-            c = c.replace(/\b(?!this\b)([a-z]\w*)\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv($1, ');
-            c = c.replace(/\bShortcutManagerCompat\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv(');
-          }
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // Desativar Controles Virtuais, FSR, FrameGen e Giroscopio
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -172,56 +252,22 @@ jobs:
           fs.writeFileSync(p, c, 'utf8');
         });
 
-        ['fsr', 'framegen', 'sensor'].forEach((sub) => {
-          walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
-            if (!p.endsWith('.java')) return;
-            let c = fs.readFileSync(p, 'utf8');
-            c = c.replace(/(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)/g, '$1 $2 = false;');
-            c = c.replace(/(public\s+void\s+onSensorChanged\s*\([^)]*\)\s*\{)/g, '$1 if (true) return;');
-            fs.writeFileSync(p, c, 'utf8');
-          });
-        });
-
-        // Esvaziar JS legado e reduzir Splash PNGs
-        walk('android/app/src/main/assets/stream/assets', (p) => {
-          if (p.includes('legacy') && p.endsWith('.js')) fs.writeFileSync(p, '', 'utf8');
-        });
-
-        const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
-        ['android/app/src/main/res', 'src'].forEach((folder) => {
-          walk(folder, (p) => {
-            const low = path.basename(p).toLowerCase();
-            if (['screen.png', 'screen_land.png', 'bg.png', 'background.png', 'bg.jpg', 'gamepad_bg.png'].includes(low)) {
-              fs.writeFileSync(p, tinyPng);
-            }
-          });
-        });
-
-        // Aplicar Tema play.xbox.com (#0e0e0e e #107C10)
-        const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4'];
-        const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e'];
+        const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4','#00d4ff','#38bdf8'];
+        const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e','#0f172a','#1e293b','#172554','#1e3a8a','#0d1b2a','#1b263b','#122342','#0c192c','#132238'];
         walk('src', (p) => {
           if (!/\.(ts|tsx|js|jsx|json)$/.test(p)) return;
           let c = fs.readFileSync(p, 'utf8');
           const orig = c;
           blueAccents.forEach((h) => { c = c.split(h).join('#107C10'); });
           darkBgs.forEach((h) => { c = c.split(h).join('#0e0e0e'); });
-          c = c.split('"Jump back in"').join('"Voltar ao jogo"').split("'Jump back in'").join("'Voltar ao jogo'");
-          c = c.split('"Recently Added"').join('"Adicionados recentemente"').split("'Recently Added'").join("'Adicionados recentemente'");
-          c = c.split('"Show all"').join('"Mostrar tudo"').split("'Show all'").join("'Mostrar tudo'");
-          c = c.split('"Find games"').join('"Pesquisar jogos"').split("'Find games'").join("'Pesquisar jogos'");
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // Adicionar permissoes e Slots LEANBACK_LAUNCHER no AndroidManifest.xml
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
           if (!man.includes('INSTALL_SHORTCUT')) {
             man = man.replace('<application', '<uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />\n    <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />\n    <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA" />\n    <application');
-          }
-          if (!man.includes('LEANBACK_LAUNCHER')) {
-            man = man.replace('<category android:name="android.intent.category.LAUNCHER" />', '<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />');
           }
           if (!man.includes('TvGameSlot1')) {
             let aliases = '';
@@ -233,12 +279,17 @@ jobs:
           fs.writeFileSync(manPath, man, 'utf8');
         }
 
-        // Injetar handleIncomingIntent e filtro GameSir na MainActivity.java
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
           code = code.replace(/(super\.onCreate\s*\([^)]*\)\s*;)/, '$1 com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
           code = code.replace(/(super\.onNewIntent\s*\([^)]*\)\s*;)/, '$1 com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
+          if (code.includes('dispatchKeyEvent')) {
+            code = code.replace(/(public\s+boolean\s+dispatchKeyEvent\s*\(\s*(?:android\.view\.)?KeyEvent\s+(\w+)\s*\)\s*\{)/, '$1 if (com.xstreaming.TvShortcutHelper.onKey(this, $2)) return true;');
+          } else {
+            const lastB = code.lastIndexOf('}');
+            code = code.slice(0, lastB) + '\n    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) { if (com.xstreaming.TvShortcutHelper.onKey(this, event)) return true; return super.dispatchKeyEvent(event); }\n}\n';
+          }
           fs.writeFileSync(mainAct, code, 'utf8');
         }
         EOF
