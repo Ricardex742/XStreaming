@@ -18,6 +18,7 @@ jobs:
         git remote add upstream https://github.com/Geocld/XStreaming.git || true
         git fetch upstream main
         git checkout upstream/main -- android/ package.json yarn.lock src/
+        git checkout HEAD -- android/app/src/main/java/com/xstreaming/TvShortcutHelper.java || true
         echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
 
@@ -65,6 +66,83 @@ jobs:
             if (fs.statSync(p).isDirectory()) walk(p, callback);
             else callback(p);
           }
+        }
+
+        // Caso o TvShortcutHelper.java tenha sido limpo pelo git checkout, recria automaticamente
+        const helperPath = 'android/app/src/main/java/com/xstreaming/TvShortcutHelper.java';
+        if (!fs.existsSync(helperPath)) {
+          const lines = [
+            'package com.xstreaming;',
+            'import android.app.Activity;',
+            'import android.content.*;',
+            'import android.content.pm.*;',
+            'import android.net.Uri;',
+            'import android.os.*;',
+            'import android.widget.Toast;',
+            'import java.util.Collections;',
+            'public class TvShortcutHelper {',
+            '  public static Context sAppContext;',
+            '  public static boolean isSupported(Object... args) {',
+            '    if (args != null) for (Object a : args) if (a instanceof Context) sAppContext = ((Context) a).getApplicationContext();',
+            '    return true;',
+            '  }',
+            '  public static void handleIncomingIntent(Activity act) {',
+            '    if (act == null) return;',
+            '    sAppContext = act.getApplicationContext();',
+            '    try {',
+            '      Intent i = act.getIntent();',
+            '      if (i != null && i.getComponent() != null && i.getComponent().getClassName().startsWith("com.xstreaming.TvGameSlot")) {',
+            '        String k = i.getComponent().getClassName().substring("com.xstreaming.".length());',
+            '        String u = act.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE).getString(k + "_uri", null);',
+            '        if (u != null) act.setIntent(Intent.parseUri(u, Intent.URI_INTENT_SCHEME));',
+            '      }',
+            '    } catch (Exception ignored) {}',
+            '  }',
+            '  public static boolean pinOnTv(Object... args) {',
+            '    if (Build.VERSION.SDK_INT < 26 || args == null) return true;',
+            '    ShortcutManager sm = null; ShortcutInfo info = null; IntentSender sender = null;',
+            '    for (Object a : args) {',
+            '      if (a instanceof Context) sAppContext = ((Context) a).getApplicationContext();',
+            '      else if (a instanceof ShortcutManager) sm = (ShortcutManager) a;',
+            '      else if (a instanceof ShortcutInfo) info = (ShortcutInfo) a;',
+            '      else if (a instanceof IntentSender) sender = (IntentSender) a;',
+            '      else if (a != null && a.getClass().getName().endsWith("ShortcutInfoCompat")) {',
+            '        try { info = (ShortcutInfo) a.getClass().getMethod("toShortcutInfo").invoke(a); } catch (Exception ignored) {}',
+            '      }',
+            '    }',
+            '    if (info == null) return true;',
+            '    try {',
+            '      if (sm == null && sAppContext != null) sm = sAppContext.getSystemService(ShortcutManager.class);',
+            '      if (sm != null) { sm.addDynamicShortcuts(Collections.singletonList(info)); try { sm.requestPinShortcut(info, sender); } catch (Exception ignored) {} }',
+            '    } catch (Exception ignored) {}',
+            '    final Context ctx = sAppContext;',
+            '    if (ctx != null) {',
+            '      final String title = info.getShortLabel() != null ? info.getShortLabel().toString() : "Jogo Xbox";',
+            '      Intent li = info.getIntent() != null ? info.getIntent() : new Intent(ctx, MainActivity.class).setAction(Intent.ACTION_VIEW);',
+            '      li.setPackage(ctx.getPackageName());',
+            '      li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);',
+            '      String uri = li.toUri(Intent.URI_INTENT_SCHEME);',
+            '      try {',
+            '        ContentValues v = new ContentValues();',
+            '        v.put("type", 0); v.put("watch_next_type", 0); v.put("last_engagement_time_utc_millis", System.currentTimeMillis());',
+            '        v.put("title", title); v.put("short_description", "Xbox Cloud Gaming");',
+            '        v.put("poster_art_uri", "https://compass-ssl.xbox.com/assets/16/9a/169a7d4c-2560-4f42-b197-11257b42b93e.jpg");',
+            '        v.put("poster_art_aspect_ratio", 4); v.put("intent_uri", uri); v.put("internal_provider_id", info.getId());',
+            '        ctx.getContentResolver().insert(Uri.parse("content://android.media.tv/watch_next_program"), v);',
+            '      } catch (Exception ignored) {}',
+            '      try {',
+            '        SharedPreferences p = ctx.getSharedPreferences("tv_game_slots", Context.MODE_PRIVATE);',
+            '        int s = (p.getInt("last_slot", 0) % 5) + 1; String sk = "TvGameSlot" + s;',
+            '        p.edit().putInt("last_slot", s).putString(sk + "_uri", uri).putString(sk + "_title", title).apply();',
+            '        ctx.getPackageManager().setComponentEnabledSetting(new ComponentName(ctx.getPackageName(), "com.xstreaming." + sk), PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);',
+            '      } catch (Exception ignored) {}',
+            '      new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(ctx, "Atalho adicionado na Tela Inicial da TV: " + title, Toast.LENGTH_LONG).show());',
+            '    }',
+            '    return true;',
+            '  }',
+            '}'
+          ];
+          fs.writeFileSync(helperPath, lines.join('\n'), 'utf8');
         }
 
         // Otimizar MediaCodec, System.loadLibrary e ShortcutManager
@@ -155,7 +233,7 @@ jobs:
           fs.writeFileSync(manPath, man, 'utf8');
         }
 
-        // Injetar handleIncomingIntent na MainActivity.java
+        // Injetar handleIncomingIntent e filtro GameSir na MainActivity.java
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
@@ -170,7 +248,7 @@ jobs:
         cat << 'EOF' > /tmp/init.gradle
         allprojects {
             tasks.configureEach { task ->
-                if (task.name.contains("NanoRust")) {
+                if (task.name.contains("NanoRust") || task.name.contains("DevRelease") || task.name.contains("DevDebug")) {
                     task.enabled = false
                 }
             }
@@ -192,7 +270,7 @@ jobs:
       run: |
         cd android
         chmod +x gradlew
-        ./gradlew assembleRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
+        ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
