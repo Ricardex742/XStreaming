@@ -33,6 +33,31 @@ jobs:
       with:
         node-version: '20'
 
+    - name: Set up Rust & Android NDK 23.1.7779620
+      run: |
+        set +e
+        set +o pipefail
+        rustup default stable
+        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
+        if [ -d "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+          ln -sf "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/darwin-x86_64"
+        fi
+        exit 0
+
+    - name: Install Dependencies
+      run: |
+        echo "nodeLinker: node-modules" > .yarnrc.yml
+        node -e 'const fs = require("fs"); const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (pkg.scripts) delete pkg.scripts.postinstall; fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));'
+        corepack enable
+        yarn install
+        if [ -d "patches" ]; then
+          for f in patches/*.patch; do
+            [ -f "$f" ] && patch -p1 -N < "$f" || true
+          done
+        fi
+
     - name: Aplicar Ultra-Lite, Tema play.xbox.com e Atalhos na TV
       run: |
         node << 'EOF'
@@ -48,7 +73,7 @@ jobs:
           }
         }
 
-        // 1. Criar TvShortcutHelper.java para publicar qualquer jogo na Tela Inicial da TV TCL
+        // 1. Criar TvShortcutHelper.java universal (sem dependencias externas de compilacao)
         const helperPath = 'android/app/src/main/java/com/xstreaming/TvShortcutHelper.java';
         const helperCode = `package com.xstreaming;
         import android.app.Activity;
@@ -62,7 +87,7 @@ jobs:
         import android.content.pm.PackageManager;
         import android.content.pm.ShortcutInfo;
         import android.content.pm.ShortcutManager;
-        import android.media.tv.TvContract;
+        import android.graphics.drawable.Icon;
         import android.net.Uri;
         import android.os.Build;
         import android.os.Handler;
@@ -99,24 +124,51 @@ jobs:
                 } catch (Exception ignored) {}
             }
 
-            public static boolean pinCompatOnTv(Context ctx, Object infoCompat, IntentSender sender) {
-                if (ctx != null) sAppContext = ctx.getApplicationContext();
+            public static void pinQuickShortcut(Activity activity) {
+                if (activity == null) return;
+                sAppContext = activity.getApplicationContext();
+                if (Build.VERSION.SDK_INT >= 26) {
+                    try {
+                        ShortcutManager sm = activity.getSystemService(ShortcutManager.class);
+                        Intent launchIntent = new Intent(activity, MainActivity.class);
+                        launchIntent.setAction(Intent.ACTION_VIEW);
+                        String id = "xbox_tv_" + (System.currentTimeMillis() / 60000);
+                        ShortcutInfo info = new ShortcutInfo.Builder(activity, id)
+                            .setShortLabel("Xbox Cloud")
+                            .setLongLabel("Abrir Xbox Cloud Gaming")
+                            .setIcon(Icon.createWithResource(activity, activity.getApplicationInfo().icon))
+                            .setIntent(launchIntent)
+                            .build();
+                        pinOnTv(sm, info, null);
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            public static boolean pinCompatOnTv(Object ctxObj, Object infoCompat, IntentSender sender) {
+                if (ctxObj instanceof Context) {
+                    sAppContext = ((Context) ctxObj).getApplicationContext();
+                }
                 try {
                     if (infoCompat != null && Build.VERSION.SDK_INT >= 26) {
                         Object si = infoCompat.getClass().getMethod("toShortcutInfo").invoke(infoCompat);
-                        if (si instanceof ShortcutInfo) {
-                            ShortcutManager sm = ctx != null ? ctx.getSystemService(ShortcutManager.class) : null;
-                            return pinOnTv(sm, (ShortcutInfo) si, sender);
-                        }
+                        ShortcutManager sm = sAppContext != null ? sAppContext.getSystemService(ShortcutManager.class) : null;
+                        return pinOnTv(sm, si, sender);
                     }
                 } catch (Exception ignored) {}
                 return true;
             }
 
-            public static boolean pinOnTv(ShortcutManager sm, ShortcutInfo info, IntentSender sender) {
-                if (info == null) return false;
+            public static boolean pinOnTv(Object smObj, Object infoObj, IntentSender sender) {
+                if (smObj instanceof Context) {
+                    sAppContext = ((Context) smObj).getApplicationContext();
+                }
+                if (Build.VERSION.SDK_INT < 26 || !(infoObj instanceof ShortcutInfo)) return true;
+                ShortcutInfo info = (ShortcutInfo) infoObj;
                 try {
-                    if (sm != null && Build.VERSION.SDK_INT >= 26) {
+                    ShortcutManager sm = (smObj instanceof ShortcutManager)
+                        ? (ShortcutManager) smObj
+                        : (sAppContext != null ? sAppContext.getSystemService(ShortcutManager.class) : null);
+                    if (sm != null) {
                         sm.addDynamicShortcuts(Collections.singletonList(info));
                         try { sm.requestPinShortcut(info, sender); } catch (Exception ignored) {}
                     }
@@ -180,9 +232,11 @@ jobs:
                         if (chUri != null) {
                             channelId = ContentUris.parseId(chUri);
                             prefs.edit().putLong("xbox_channel_id", channelId).apply();
-                            if (Build.VERSION.SDK_INT >= 26) {
-                                TvContract.requestChannelBrowsable(ctx, channelId);
-                            }
+                            try {
+                                Class.forName("android.media.tv.TvContract")
+                                    .getMethod("requestChannelBrowsable", Context.class, long.class)
+                                    .invoke(null, ctx, channelId);
+                            } catch (Exception ignored) {}
                         }
                     }
                     if (channelId != -1L) {
@@ -216,7 +270,7 @@ jobs:
         fs.mkdirSync(path.dirname(helperPath), { recursive: true });
         fs.writeFileSync(helperPath, helperCode, 'utf8');
 
-        // 2. Otimizar MediaCodec e conectar ShortcutManager nos arquivos Java
+        // 2. Otimizar MediaCodec e conectar ShortcutManager apenas onde ShortcutManager existir
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java') || p.endsWith('TvShortcutHelper.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -224,10 +278,12 @@ jobs:
           c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
           c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
-          c = c.replace(/\b([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'com.xstreaming.TvShortcutHelper.isSupported($1)');
-          c = c.replace(/\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\(/g, 'com.xstreaming.TvShortcutHelper.isSupported(');
-          c = c.replace(/\b([a-z]\w*)\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv($1, ');
-          c = c.replace(/\bShortcutManagerCompat\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinCompatOnTv(');
+          if (c.includes('ShortcutManager')) {
+            c = c.replace(/\b([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'com.xstreaming.TvShortcutHelper.isSupported($1)');
+            c = c.replace(/\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\(/g, 'com.xstreaming.TvShortcutHelper.isSupported(');
+            c = c.replace(/\b([a-z]\w*)\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv($1, ');
+            c = c.replace(/\bShortcutManagerCompat\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinCompatOnTv(');
+          }
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
@@ -250,9 +306,9 @@ jobs:
           });
         });
 
-        // 4. Remover JS legado de WebView e reduzir Splash PNGs para 68 bytes
+        // 4. Esvaziar JS legado de WebView e reduzir Splash PNGs para 68 bytes
         walk('android/app/src/main/assets/stream/assets', (p) => {
-          if (p.includes('legacy') && p.endsWith('.js')) fs.unlinkSync(p);
+          if (p.includes('legacy') && p.endsWith('.js')) fs.writeFileSync(p, '', 'utf8');
         });
 
         const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -309,7 +365,7 @@ jobs:
           fs.writeFileSync(manPath, man, 'utf8');
         }
 
-        // 8. Injetar TvShortcutHelper e Filtro de 1000Hz do Dongle GameSir na MainActivity.java
+        // 8. Injetar TvShortcutHelper, Atalho L3+R3 e Filtro de 1000Hz do Dongle GameSir na MainActivity.java
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
@@ -320,6 +376,22 @@ jobs:
             private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;
             private long _lastMotionTime = 0L;
             private boolean _wasCentered = true;
+            private boolean _l3Down = false, _r3Down = false;
+            @Override
+            public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+                if (event != null) {
+                    int keyCode = event.getKeyCode();
+                    boolean isDown = event.getAction() == android.view.KeyEvent.ACTION_DOWN;
+                    if (keyCode == android.view.KeyEvent.KEYCODE_BUTTON_THUMBL) _l3Down = isDown;
+                    if (keyCode == android.view.KeyEvent.KEYCODE_BUTTON_THUMBR) _r3Down = isDown;
+                    if (_l3Down && _r3Down && isDown) {
+                        _l3Down = false; _r3Down = false;
+                        com.xstreaming.TvShortcutHelper.pinQuickShortcut(this);
+                        return true;
+                    }
+                }
+                return super.dispatchKeyEvent(event);
+            }
             @Override
             public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
                 com.xstreaming.TvShortcutHelper.sAppContext = getApplicationContext();
@@ -360,30 +432,6 @@ jobs:
           }
         }
         EOF
-
-    - name: Set up Rust & Android NDK 23.1.7779620
-      run: |
-        rustup default stable || true
-        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android || true
-        SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-        yes | "$SDKM" --licenses || true
-        yes | "$SDKM" --install "ndk;23.1.7779620" "cmake;3.22.1" \vert{}\vert{} yes \vert{} "$SDKM" --install "ndk;23.1.7779620" "cmake;3.22.1"
-        NDK_PRE="$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt"
-        if [ -d "$NDK_PRE/linux-x86_64" ]; then
-          ln -sf "$NDK_PRE/linux-x86_64" "$NDK_PRE/darwin-x86_64" || true
-        fi
-
-    - name: Install Dependencies
-      run: |
-        echo "nodeLinker: node-modules" > .yarnrc.yml
-        node -e 'const fs = require("fs"); const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (pkg.scripts) delete pkg.scripts.postinstall; fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));'
-        corepack enable
-        yarn install
-        if [ -d "patches" ]; then
-          for f in patches/*.patch; do
-            [ -f "$f" ] && patch -p1 -N < "$f" || true
-          done
-        fi
 
     - name: Configure Signing
       run: |
