@@ -18,71 +18,14 @@ jobs:
         git remote add upstream https://github.com/Geocld/XStreaming.git || true
         git fetch upstream main
         git checkout upstream/main -- android/ package.json yarn.lock src/
-        echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
-        sed -i 's/reactNativeArchitectures=.*/reactNativeArchitectures=armeabi-v7a,arm64-v8a/g' android/gradle.properties
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-        cache: 'gradle'
-
-    - name: Set up Node.js 20
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Set up Rust & Android NDK 23.1.7779620
-      run: |
-        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
-        if [ -d "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" ]; then
-          ln -sf "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/darwin-x86_64" || true
-        fi
-
-    - name: Install Dependencies
-      run: |
-        echo "nodeLinker: node-modules" > .yarnrc.yml
-        node -e 'const fs = require("fs"); const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (pkg.scripts) delete pkg.scripts.postinstall; fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));'
-        corepack enable
-        yarn install
-        if [ -d "patches" ]; then
-          for f in patches/*.patch; do
-            [ -f "$f" ] && patch -p1 -N < "$f" || true
-          done
-        fi
-
-    - name: Aplicar Ultra-Lite, Interface Xbox e Atalhos de Qualquer Jogo na TV
+    - name: Aplicar Modo Ultra-Leve, Tema play.xbox.com e Atalhos na TV
       shell: python
       run: |
-        import os, re, shutil, base64
+        import os, re, base64
 
-        # 1. Deletar fisicamente pastas de binarios x86 e x86_64 (Economiza ~45MB reais no APK)
-        for search_root in ["android", "node_modules"]:
-            if os.path.exists(search_root):
-                for root, dirs, _ in os.walk(search_root, topdown=False):
-                    for d in dirs:
-                        if d in ("x86", "x86_64"):
-                            try:
-                                shutil.rmtree(os.path.join(root, d))
-                            except Exception:
-                                pass
-
-        # 2. Deletar fisicamente arquivos legados de WebView em assets/stream
-        stream_assets = "android/app/src/main/assets/stream/assets"
-        if os.path.exists(stream_assets):
-            for root, _, files in os.walk(stream_assets):
-                for file in files:
-                    if "legacy" in file and file.endswith(".js"):
-                        try:
-                            os.remove(os.path.join(root, file))
-                        except Exception:
-                            pass
-
-        # 3. Criar a classe TvShortcutHelper.java para publicar qualquer jogo escolhido na Tela Inicial da TV TCL
+        # 1.Criar TvShortcutHelper.java 100% compativel com Android SDK padrao
         helper_path = "android/app/src/main/java/com/xstreaming/TvShortcutHelper.java"
         helper_lines = [
             "package com.xstreaming;",
@@ -106,13 +49,9 @@ jobs:
             "import java.util.Collections;",
             "public class TvShortcutHelper {",
             "    public static Context sAppContext;",
-            "    public static String sLastImageUrl = null;",
-            "    public static ShortcutInfo sLastShortcutInfo = null;",
-            "    public static String captureUrl(String url) {",
-            "        if (url != null && url.startsWith(\"http\")) {",
-            "            sLastImageUrl = url;",
-            "        }",
-            "        return url;",
+            "    public static boolean isSupported(Object smOrCtx) {",
+            "        if (smOrCtx instanceof Context) sAppContext = ((Context) smOrCtx).getApplicationContext();",
+            "        return true;",
             "    }",
             "    public static void handleIncomingIntent(Activity activity) {",
             "        if (activity == null) return;",
@@ -132,9 +71,21 @@ jobs:
             "            }",
             "        } catch (Exception ignored) {}",
             "    }",
+            "    public static boolean pinCompatOnTv(Context ctx, Object infoCompat, IntentSender sender) {",
+            "        if (ctx != null) sAppContext = ctx.getApplicationContext();",
+            "        try {",
+            "            if (infoCompat != null && Build.VERSION.SDK_INT >= 26) {",
+            "                Object si = infoCompat.getClass().getMethod(\"toShortcutInfo\").invoke(infoCompat);",
+            "                if (si instanceof ShortcutInfo) {",
+            "                    ShortcutManager sm = ctx != null ? ctx.getSystemService(ShortcutManager.class) : null;",
+            "                    return pinOnTv(sm, (ShortcutInfo) si, sender);",
+            "                }",
+            "            }",
+            "        } catch (Exception ignored) {}",
+            "        return true;",
+            "    }",
             "    public static boolean pinOnTv(ShortcutManager sm, ShortcutInfo info, IntentSender sender) {",
             "        if (info == null) return false;",
-            "        sLastShortcutInfo = info;",
             "        try {",
             "            if (sm != null && Build.VERSION.SDK_INT >= 26) {",
             "                sm.addDynamicShortcuts(Collections.singletonList(info));",
@@ -153,7 +104,7 @@ jobs:
             "            launchIntent.setPackage(ctx.getPackageName());",
             "            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);",
             "            String intentUri = launchIntent.toUri(Intent.URI_INTENT_SCHEME);",
-            "            String posterUri = sLastImageUrl != null ? sLastImageUrl : \"https://compass-ssl.xbox.com/assets/16/9a/169a7d4c-2560-4f42-b197-11257b42b93e.jpg\";",
+            "            String posterUri = \"https://compass-ssl.xbox.com/assets/16/9a/169a7d4c-2560-4f42-b197-11257b42b93e.jpg\";",
             "            publishToWatchNext(ctx, id, title, posterUri, intentUri);",
             "            publishToTvChannel(ctx, id, title, posterUri, intentUri);",
             "            enableAppRowSlot(ctx, title, intentUri);",
@@ -233,9 +184,8 @@ jobs:
         with open(helper_path, "w", encoding="utf-8") as f:
             f.write("\n".join(helper_lines) + "\n")
 
-        # 4. Conectar o botao nativo de Atalhos do XStreaming ao TvShortcutHelper e reequilibrar o MediaCodec
-        java_root = "android/app/src/main/java"
-        for root, _, files in os.walk(java_root):
+        # 2. Reequilibrar MediaCodec e conectar ShortcutManager sem tocar nos parenteses de fechamento
+        for root, _, files in os.walk("android/app/src/main/java"):
             for file in files:
                 if file.endswith(".java") and file != "TvShortcutHelper.java":
                     p = os.path.join(root, file)
@@ -245,15 +195,15 @@ jobs:
                     c = c.replace("MediaFormat.KEY_PRIORITY, 0", "MediaFormat.KEY_PRIORITY, 1")
                     c = c.replace("KEY_OPERATING_RATE, Short.MAX_VALUE", "KEY_OPERATING_RATE, 60")
                     c = c.replace("KEY_OPERATING_RATE, Integer.MAX_VALUE", "KEY_OPERATING_RATE, 60")
-                    if "ShortcutManager" in c or "requestPinShortcut" in c:
-                        c = re.sub(r'(\w+)\.isRequestPinShortcutSupported\s*\(\s*\)', r'(\1 != null)', c)
-                        c = re.sub(r'(\w+)\.requestPinShortcut\s*\(\s*([^,]+)\s*,\s*([^)]+)\)', r'com.xstreaming.TvShortcutHelper.pinOnTv(\1, \2, \3)', c)
-                        c = re.sub(r'new\s+URL\s*\(\s*([^)]+)\s*\)', r'new URL(com.xstreaming.TvShortcutHelper.captureUrl(\1))', c)
+                    c = re.sub(r'\b([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)', r'com.xstreaming.TvShortcutHelper.isSupported(\1)', c)
+                    c = re.sub(r'\b([a-z]\w*)\.requestPinShortcut\s*\(', r'com.xstreaming.TvShortcutHelper.pinOnTv(\1, ', c)
+                    c = re.sub(r'\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\(', r'com.xstreaming.TvShortcutHelper.isSupported(', c)
+                    c = re.sub(r'\bShortcutManagerCompat\.requestPinShortcut\s*\(', r'com.xstreaming.TvShortcutHelper.pinCompatOnTv(', c)
                     if c != orig:
                         with open(p, "w", encoding="utf-8") as f:
                             f.write(c)
 
-        # 5. Desativar completamente Controles Virtuais na tela (Zero GPU / Zero RAM)
+        # 3. Desativar completamente Controles Virtuais, Sensores de Giroscopio, FSR e FrameGen
         tc_dir = "android/app/src/main/java/com/xstreaming/touchcontrols"
         if os.path.exists(tc_dir):
             for root, _, files in os.walk(tc_dir):
@@ -267,8 +217,7 @@ jobs:
                         with open(p, "w", encoding="utf-8") as f:
                             f.write(c)
 
-        # 6. Travar FSR e Lossless Scaling (FrameGen) desligados
-        for sub in ["fsr", "framegen"]:
+        for sub in ["fsr", "framegen", "sensor"]:
             d = os.path.join("android/app/src/main/java/com/xstreaming", sub)
             if os.path.exists(d):
                 for root, _, files in os.walk(d):
@@ -278,10 +227,22 @@ jobs:
                             with open(p, "r", encoding="utf-8") as f:
                                 c = f.read()
                             c = re.sub(r'(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)', r'\1 \2 = false;', c)
+                            c = re.sub(r'(public\s+void\s+onSensorChanged\s*\([^)]*\)\s*\{)', r'\1 if (true) return;', c)
                             with open(p, "w", encoding="utf-8") as f:
                                 f.write(c)
 
-        # 7. Substituir PNGs de Splash e Marcas d'Agua por pixel escuro de 68 bytes
+        # 4. Deletar fisicamente os arquivos JS legados de WebView em assets/stream
+        stream_assets = "android/app/src/main/assets/stream/assets"
+        if os.path.exists(stream_assets):
+            for root, _, files in os.walk(stream_assets):
+                for file in files:
+                    if "legacy" in file and file.endswith(".js"):
+                        try:
+                            os.remove(os.path.join(root, file))
+                        except Exception:
+                            pass
+
+        # 5. Substituir PNGs pesados de Splash e Marcas d'Agua por pixel escuro (#0e0e0e)
         tiny_png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
         for search_folder in ["android/app/src/main/res", "src"]:
             if os.path.exists(search_folder):
@@ -292,7 +253,7 @@ jobs:
                             with open(os.path.join(root, file), "wb") as f:
                                 f.write(tiny_png)
 
-        # 8. Tema Oficial play.xbox.com (#0e0e0e e #107C10) e traducao dos botoes de atalho
+        # 6. Transformar Interface para o Tema Oficial play.xbox.com (Preto Carbono #0e0e0e e Verde Xbox #107C10)
         blue_accents = [
             "#2088ff", "#2088FF", "#1890ff", "#1890FF", "#007aff", "#007AFF",
             "#2196f3", "#2196F3", "#0088ff", "#0088FF", "#3880ff", "#3880FF",
@@ -320,14 +281,23 @@ jobs:
                             c = c.replace('"Recently Added"', '"Adicionados recentemente"').replace("'Recently Added'", "'Adicionados recentemente'")
                             c = c.replace('"Show all"', '"Mostrar tudo"').replace("'Show all'", "'Mostrar tudo'")
                             c = c.replace('"Find games"', '"Pesquisar jogos"').replace("'Find games'", "'Pesquisar jogos'")
-                            c = c.replace('"Add to home screen"', '"Adicionar à Tela Inicial da TV"').replace("'Add to home screen'", "'Adicionar à Tela Inicial da TV'")
                             if c != orig:
                                 with open(p, "w", encoding="utf-8") as f:
                                     f.write(c)
                         except Exception:
                             pass
 
-        # 9. Registrar permissoes de TV e 5 Slots de Atalhos LEANBACK_LAUNCHER no AndroidManifest.xml
+        # 7. Remover arquiteturas de PC (x86 / x86_64) do build.gradle
+        bg_path = "android/app/build.gradle"
+        if os.path.exists(bg_path):
+            with open(bg_path, "r", encoding="utf-8") as f:
+                bg = f.read()
+            bg = bg.replace('"x86", "x86_64", ', '').replace('"x86", "x86_64"', '"armeabi-v7a", "arm64-v8a"')
+            bg = bg.replace("'x86', 'x86_64', ", "").replace("'x86', 'x86_64'", "'armeabi-v7a', 'arm64-v8a'")
+            with open(bg_path, "w", encoding="utf-8") as f:
+                f.write(bg)
+
+        # 8. Registrar permissoes de TV e 5 Slots de Atalhos LEANBACK_LAUNCHER no AndroidManifest.xml
         manifest_path = "android/app/src/main/AndroidManifest.xml"
         if os.path.exists(manifest_path):
             with open(manifest_path, "r", encoding="utf-8") as f:
@@ -350,7 +320,7 @@ jobs:
                 for idx in range(1, 6):
                     aliases.append(
                         f'        <activity-alias android:name=".TvGameSlot{idx}" android:targetActivity=".MainActivity" '
-                        f'android:label="Xbox Atalho #{idx}" android:enabled="false" android:exported="true">\n'
+                        f'android:label="Xbox Jogo {idx}" android:enabled="false" android:exported="true">\n'
                         f'            <intent-filter>\n'
                         f'                <action android:name="android.intent.action.MAIN" />\n'
                         f'                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />\n'
@@ -362,96 +332,17 @@ jobs:
             with open(manifest_path, "w", encoding="utf-8") as f:
                 f.write(man)
 
-        # 10. Inicializar TvShortcutHelper e Filtro de 1000Hz do Dongle GameSir na MainActivity
+        # 9. Injetar TvShortcutHelper sem duplicar onNewIntent + Filtro de 1000Hz do Dongle GameSir na MainActivity
         main_act = "android/app/src/main/java/com/xstreaming/MainActivity.java"
         if os.path.exists(main_act):
             with open(main_act, "r", encoding="utf-8") as f:
                 code = f.read()
             code = re.sub(
-                r'(protected\s+void\s+onCreate\s*\(\s*Bundle\s+\w+\s*\)\s*\{)',
-                r'\1\n        com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);',
+                r'(super\.onCreate\s*\([^)]*\)\s*;)',
+                r'\1 com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);',
                 code,
                 count=1
             )
-            if "_lastMotionTime" not in code and "dispatchGenericMotionEvent" not in code:
-                lines = [
-                    "    private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;",
-                    "    private long _lastMotionTime = 0L;",
-                    "    private boolean _wasCentered = true;",
-                    "    @Override",
-                    "    public void onNewIntent(android.content.Intent intent) {",
-                    "        super.onNewIntent(intent);",
-                    "        setIntent(intent);",
-                    "        com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);",
-                    "    }",
-                    "    @Override",
-                    "    public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {",
-                    "        com.xstreaming.TvShortcutHelper.sAppContext = getApplicationContext();",
-                    "        if (event != null && (event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {",
-                    "            float lx = event.getAxisValue(android.view.MotionEvent.AXIS_X);",
-                    "            float ly = event.getAxisValue(android.view.MotionEvent.AXIS_Y);",
-                    "            float rx = event.getAxisValue(android.view.MotionEvent.AXIS_Z);",
-                    "            float ry = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);",
-                    "            float lt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_BRAKE));",
-                    "            float rt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_GAS));",
-                    "            float hatX = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X);",
-                    "            float hatY = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y);",
-                    "            boolean isCentered = Math.abs(lx) < 0.08f && Math.abs(ly) < 0.08f && Math.abs(rx) < 0.08f && Math.abs(ry) < 0.08f && lt < 0.05f && rt < 0.05f;",
-                    "            boolean hatChanged = Float.compare(hatX, _lastHatX) != 0 || Float.compare(hatY, _lastHatY) != 0;",
-                    "            long now = android.os.SystemClock.uptimeMillis();",
-                    "            if (!hatChanged) {",
-                    "                if (isCentered) {",
-                    "                    if (_wasCentered) return true;",
-                    "                    _wasCentered = true;",
-                    "                } else {",
-                    "                    _wasCentered = false;",
-                    "                    if (now - _lastMotionTime < 14L) return true;",
-                    "                    if (Math.abs(lx - _lastLX) < 0.015f && Math.abs(ly - _lastLY) < 0.015f && Math.abs(rx - _lastRX) < 0.015f && Math.abs(ry - _lastRY) < 0.015f && Math.abs(lt - _lastLT) < 0.02f && Math.abs(rt - _lastRT) < 0.02f) return true;",
-                    "                }",
-                    "            }",
-                    "            _lastHatX = hatX; _lastHatY = hatY;",
-                    "            _lastLX = lx; _lastLY = ly; _lastRX = rx; _lastRY = ry; _lastLT = lt; _lastRT = rt;",
-                    "            _lastMotionTime = now;",
-                    "        }",
-                    "        return super.dispatchGenericMotionEvent(event);",
-                    "    }"
-                ]
-                last_brace = code.rfind("}")
-                if last_brace != -1:
-                    code = code[:last_brace] + "\n" + "\n".join(lines) + "\n}\n"
-                    with open(main_act, "w", encoding="utf-8") as f:
-                        f.write(code)
-
-    - name: Configure Signing & Strip Unused Native Libraries
-      run: |
-        cat << 'EOF' > /tmp/init.gradle
-        allprojects {
-            afterEvaluate { project ->
-                if (project.hasProperty('android')) {
-                    project.android {
-                        buildTypes {
-                            release {
-                                signingConfig signingConfigs.debug
-                            }
-                        }
-                        packagingOptions {
-                            exclude 'lib/x86/**'
-                            exclude 'lib/x86_64/**'
-                        }
-                    }
-                }
-            }
-        }
-        EOF
-
-    - name: Build Release APK
-      run: |
-        cd android
-        chmod +x gradlew
-        ./gradlew assembleProdRelease -x lint -x test --init-script /tmp/init.gradle || ./gradlew assembleRelease -x lint -x test --init-script /tmp/init.gradle
-
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: XStreaming-TV-UltraLite-APK
-        path: android/app/build/outputs/apk/**/*.apk
+            code = re.sub(
+                r'(super\.onNewIntent\s*\([^)]*\)\s*;)',
+                r'\1 com.xstreaming.TvShortcutHelper.
