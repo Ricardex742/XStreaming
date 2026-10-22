@@ -39,8 +39,7 @@ jobs:
         set +o pipefail
         rustup default stable
         rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
         if [ -d "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" ]; then
           ln -sf "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/darwin-x86_64"
         fi
@@ -73,7 +72,7 @@ jobs:
           }
         }
 
-        // 1. Criar TvShortcutHelper.java universal (sem dependencias externas de compilacao)
+        // 1. Criar TvShortcutHelper.java com argumentos universais (Object... args)
         const helperPath = 'android/app/src/main/java/com/xstreaming/TvShortcutHelper.java';
         const helperCode = `package com.xstreaming;
         import android.app.Activity;
@@ -87,7 +86,6 @@ jobs:
         import android.content.pm.PackageManager;
         import android.content.pm.ShortcutInfo;
         import android.content.pm.ShortcutManager;
-        import android.graphics.drawable.Icon;
         import android.net.Uri;
         import android.os.Build;
         import android.os.Handler;
@@ -98,9 +96,13 @@ jobs:
         public class TvShortcutHelper {
             public static Context sAppContext;
 
-            public static boolean isSupported(Object obj) {
-                if (obj instanceof Context) {
-                    sAppContext = ((Context) obj).getApplicationContext();
+            public static boolean isSupported(Object... args) {
+                if (args != null) {
+                    for (Object a : args) {
+                        if (a instanceof Context) {
+                            sAppContext = ((Context) a).getApplicationContext();
+                        }
+                    }
                 }
                 return true;
             }
@@ -124,50 +126,32 @@ jobs:
                 } catch (Exception ignored) {}
             }
 
-            public static void pinQuickShortcut(Activity activity) {
-                if (activity == null) return;
-                sAppContext = activity.getApplicationContext();
-                if (Build.VERSION.SDK_INT >= 26) {
-                    try {
-                        ShortcutManager sm = activity.getSystemService(ShortcutManager.class);
-                        Intent launchIntent = new Intent(activity, MainActivity.class);
-                        launchIntent.setAction(Intent.ACTION_VIEW);
-                        String id = "xbox_tv_" + (System.currentTimeMillis() / 60000);
-                        ShortcutInfo info = new ShortcutInfo.Builder(activity, id)
-                            .setShortLabel("Xbox Cloud")
-                            .setLongLabel("Abrir Xbox Cloud Gaming")
-                            .setIcon(Icon.createWithResource(activity, activity.getApplicationInfo().icon))
-                            .setIntent(launchIntent)
-                            .build();
-                        pinOnTv(sm, info, null);
-                    } catch (Exception ignored) {}
-                }
-            }
-
-            public static boolean pinCompatOnTv(Object ctxObj, Object infoCompat, IntentSender sender) {
-                if (ctxObj instanceof Context) {
-                    sAppContext = ((Context) ctxObj).getApplicationContext();
-                }
-                try {
-                    if (infoCompat != null && Build.VERSION.SDK_INT >= 26) {
-                        Object si = infoCompat.getClass().getMethod("toShortcutInfo").invoke(infoCompat);
-                        ShortcutManager sm = sAppContext != null ? sAppContext.getSystemService(ShortcutManager.class) : null;
-                        return pinOnTv(sm, si, sender);
+            public static boolean pinOnTv(Object... args) {
+                if (Build.VERSION.SDK_INT < 26 || args == null) return true;
+                ShortcutManager sm = null;
+                ShortcutInfo info = null;
+                IntentSender sender = null;
+                for (Object a : args) {
+                    if (a instanceof Context) {
+                        sAppContext = ((Context) a).getApplicationContext();
+                    } else if (a instanceof ShortcutManager) {
+                        sm = (ShortcutManager) a;
+                    } else if (a instanceof ShortcutInfo) {
+                        info = (ShortcutInfo) a;
+                    } else if (a instanceof IntentSender) {
+                        sender = (IntentSender) a;
+                    } else if (a != null && a.getClass().getName().endsWith("ShortcutInfoCompat")) {
+                        try {
+                            Object si = a.getClass().getMethod("toShortcutInfo").invoke(a);
+                            if (si instanceof ShortcutInfo) info = (ShortcutInfo) si;
+                        } catch (Exception ignored) {}
                     }
-                } catch (Exception ignored) {}
-                return true;
-            }
-
-            public static boolean pinOnTv(Object smObj, Object infoObj, IntentSender sender) {
-                if (smObj instanceof Context) {
-                    sAppContext = ((Context) smObj).getApplicationContext();
                 }
-                if (Build.VERSION.SDK_INT < 26 || !(infoObj instanceof ShortcutInfo)) return true;
-                ShortcutInfo info = (ShortcutInfo) infoObj;
+                if (info == null) return true;
                 try {
-                    ShortcutManager sm = (smObj instanceof ShortcutManager)
-                        ? (ShortcutManager) smObj
-                        : (sAppContext != null ? sAppContext.getSystemService(ShortcutManager.class) : null);
+                    if (sm == null && sAppContext != null) {
+                        sm = sAppContext.getSystemService(ShortcutManager.class);
+                    }
                     if (sm != null) {
                         sm.addDynamicShortcuts(Collections.singletonList(info));
                         try { sm.requestPinShortcut(info, sender); } catch (Exception ignored) {}
@@ -270,7 +254,7 @@ jobs:
         fs.mkdirSync(path.dirname(helperPath), { recursive: true });
         fs.writeFileSync(helperPath, helperCode, 'utf8');
 
-        // 2. Otimizar MediaCodec e conectar ShortcutManager apenas onde ShortcutManager existir
+        // 2. Otimizar MediaCodec e interceptar apenas variaveis de ShortcutManager
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java') || p.endsWith('TvShortcutHelper.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -279,10 +263,10 @@ jobs:
           c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           if (c.includes('ShortcutManager')) {
-            c = c.replace(/\b([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'com.xstreaming.TvShortcutHelper.isSupported($1)');
+            c = c.replace(/\b(?!this\b)([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'com.xstreaming.TvShortcutHelper.isSupported($1)');
             c = c.replace(/\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\(/g, 'com.xstreaming.TvShortcutHelper.isSupported(');
-            c = c.replace(/\b([a-z]\w*)\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv($1, ');
-            c = c.replace(/\bShortcutManagerCompat\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinCompatOnTv(');
+            c = c.replace(/\b(?!this\b)([a-z]\w*)\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv($1, ');
+            c = c.replace(/\bShortcutManagerCompat\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv(');
           }
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
@@ -365,7 +349,7 @@ jobs:
           fs.writeFileSync(manPath, man, 'utf8');
         }
 
-        // 8. Injetar TvShortcutHelper, Atalho L3+R3 e Filtro de 1000Hz do Dongle GameSir na MainActivity.java
+        // 8. Injetar TvShortcutHelper e Filtro de 1000Hz do Dongle GameSir na MainActivity.java (sem duplicar metodos)
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
@@ -376,22 +360,6 @@ jobs:
             private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;
             private long _lastMotionTime = 0L;
             private boolean _wasCentered = true;
-            private boolean _l3Down = false, _r3Down = false;
-            @Override
-            public boolean dispatchKeyEvent(android.view.KeyEvent event) {
-                if (event != null) {
-                    int keyCode = event.getKeyCode();
-                    boolean isDown = event.getAction() == android.view.KeyEvent.ACTION_DOWN;
-                    if (keyCode == android.view.KeyEvent.KEYCODE_BUTTON_THUMBL) _l3Down = isDown;
-                    if (keyCode == android.view.KeyEvent.KEYCODE_BUTTON_THUMBR) _r3Down = isDown;
-                    if (_l3Down && _r3Down && isDown) {
-                        _l3Down = false; _r3Down = false;
-                        com.xstreaming.TvShortcutHelper.pinQuickShortcut(this);
-                        return true;
-                    }
-                }
-                return super.dispatchKeyEvent(event);
-            }
             @Override
             public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
                 com.xstreaming.TvShortcutHelper.sAppContext = getApplicationContext();
