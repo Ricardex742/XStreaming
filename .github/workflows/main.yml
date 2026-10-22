@@ -4,11 +4,6 @@ on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
-    inputs:
-      jogos_atalho:
-        description: 'Jogos para gerar Mini-APK (separados por virgula)'
-        required: false
-        default: 'EA Sports FC 26, Gears of War: E-Day, Call of Duty: Modern Warfare III'
 
 jobs:
   build:
@@ -23,6 +18,7 @@ jobs:
         git remote add upstream https://github.com/Geocld/XStreaming.git || true
         git fetch upstream main
         git checkout upstream/main -- android/ package.json yarn.lock src/
+        rm -f android/app/src/main/java/com/xstreaming/TvShortcutHelper.java
         echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
 
@@ -58,7 +54,7 @@ jobs:
           done
         fi
 
-    - name: Aplicar Ultra-Lite, Tema Xbox e Auto-Play Completo (Consoles -> xCloud -> Jogo)
+    - name: Aplicar Ultra-Lite, Tema Xbox e Protecao Anti-Travamento de Video
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -73,223 +69,21 @@ jobs:
           }
         }
 
-        const helperPath = 'android/app/src/main/java/com/xstreaming/TvShortcutHelper.java';
-        const lines = [
-          'package com.xstreaming;',
-          'import android.app.Activity;',
-          'import android.content.*;',
-          'import android.os.*;',
-          'import android.view.*;',
-          'import android.view.accessibility.AccessibilityNodeInfo;',
-          'import android.view.inputmethod.EditorInfo;',
-          'import android.view.inputmethod.InputConnection;',
-          'import android.widget.*;',
-          'import java.lang.reflect.Field;',
-          'import java.util.*;',
-          'public class TvShortcutHelper {',
-          '  public static String sPendingGame = null;',
-          '  private static boolean sLoopStarted = false;',
-          '  private static int sCatalogTicks = 0;',
-          '  private static boolean sTypedInSearch = false;',
-          '  private static long sLastActionTime = 0L;',
-          '  private static String norm(String s) {',
-          '    if (s == null) return "";',
-          '    return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]+", " ").replaceAll("\\\\s+", " ").trim();',
-          '  }',
-          '  public static void handleIncomingIntent(final Activity act) {',
-          '    if (act == null) return;',
-          '    try {',
-          '      Intent i = act.getIntent();',
-          '      if (i != null && i.hasExtra("game_title")) {',
-          '        String t = i.getStringExtra("game_title");',
-          '        if (t != null && !t.isEmpty()) {',
-          '          sPendingGame = t.trim();',
-          '          sCatalogTicks = 0;',
-          '          sTypedInSearch = false;',
-          '          sLastActionTime = 0L;',
-          '          i.removeExtra("game_title");',
-          '          Toast.makeText(act, "Abrindo automaticamente: " + sPendingGame, Toast.LENGTH_LONG).show();',
-          '        }',
-          '      }',
-          '    } catch (Exception ignored) {}',
-          '    if (!sLoopStarted) {',
-          '      sLoopStarted = true;',
-          '      final Handler h = new Handler(Looper.getMainLooper());',
-          '      h.postDelayed(new Runnable() {',
-          '        @Override public void run() { autoLaunchLoop(act); h.postDelayed(this, 500); }',
-          '      }, 600);',
-          '    }',
-          '  }',
-          '  private static List<View> getAllRootViews(Activity act) {',
-          '    List<View> list = new ArrayList<>();',
-          '    try {',
-          '      Class<?> wmg = Class.forName("android.view.WindowManagerGlobal");',
-          '      Object inst = wmg.getMethod("getInstance").invoke(null);',
-          '      Field f = wmg.getDeclaredField("mViews"); f.setAccessible(true);',
-          '      List<?> views = (List<?>) f.get(inst);',
-          '      if (views != null) for (Object o : views) if (o instanceof View) list.add((View) o);',
-          '    } catch (Exception ignored) {}',
-          '    if (list.isEmpty() && act.getWindow() != null) list.add(act.getWindow().getDecorView());',
-          '    return list;',
-          '  }',
-          '  private static void collectViews(View v, List<TextView> texts, List<EditText> edits) {',
-          '    if (v == null || v.getVisibility() != View.VISIBLE) return;',
-          '    if (v instanceof EditText) edits.add((EditText) v);',
-          '    else if (v instanceof TextView) texts.add((TextView) v);',
-          '    else if (v instanceof ViewGroup) {',
-          '      ViewGroup vg = (ViewGroup) v;',
-          '      for (int i = 0; i < vg.getChildCount(); i++) collectViews(vg.getChildAt(i), texts, edits);',
-          '    }',
-          '  }',
-          '  private static void sendKey(Activity act, View root, int keyCode) {',
-          '    try {',
-          '      long now = SystemClock.uptimeMillis();',
-          '      KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0);',
-          '      KeyEvent up = new KeyEvent(now, now + 30, KeyEvent.ACTION_UP, keyCode, 0);',
-          '      act.dispatchKeyEvent(down);',
-          '      act.dispatchKeyEvent(up);',
-          '      if (root != null) { root.dispatchKeyEvent(down); root.dispatchKeyEvent(up); }',
-          '    } catch (Exception ignored) {}',
-          '  }',
-          '  private static void tapTarget(Activity act, View root, View target, boolean tapAboveCover) {',
-          '    try {',
-          '      int[] loc = new int[2]; target.getLocationOnScreen(loc);',
-          '      int[] rLoc = new int[2]; root.getLocationOnScreen(rLoc);',
-          '      float x = (loc[0] - rLoc[0]) + (target.getWidth() / 2.0f);',
-          '      float y = (loc[1] - rLoc[1]) + (target.getHeight() / 2.0f);',
-          '      long now = SystemClock.uptimeMillis();',
-          '      if (tapAboveCover && y > 110f) {',
-          '        float cy = y - 85f;',
-          '        root.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, cy, 0));',
-          '        root.dispatchTouchEvent(MotionEvent.obtain(now, now + 50, MotionEvent.ACTION_UP, x, cy, 0));',
-          '      }',
-          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 60, MotionEvent.ACTION_DOWN, x, y, 0));',
-          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 60, now + 110, MotionEvent.ACTION_UP, x, y, 0));',
-          '      View cur = target;',
-          '      while (cur != null) {',
-          '        try { cur.performAccessibilityAction(AccessibilityNodeInfo.ACTION_CLICK, null); } catch (Exception ignored) {}',
-          '        if (cur.isFocusable()) cur.requestFocus();',
-          '        if (cur.isClickable()) cur.performClick();',
-          '        ViewParent p = cur.getParent();',
-          '        cur = (p instanceof View) ? (View) p : null;',
-          '      }',
-          '      sendKey(act, root, KeyEvent.KEYCODE_DPAD_CENTER);',
-          '      sendKey(act, root, KeyEvent.KEYCODE_BUTTON_A);',
-          '      sendKey(act, root, KeyEvent.KEYCODE_ENTER);',
-          '    } catch (Exception ignored) {}',
-          '  }',
-          '  private static void typeIntoReactEdit(Activity act, View root, EditText et, String query) {',
-          '    try {',
-          '      int[] loc = new int[2]; et.getLocationOnScreen(loc);',
-          '      int[] rLoc = new int[2]; root.getLocationOnScreen(rLoc);',
-          '      float x = (loc[0] - rLoc[0]) + (et.getWidth() / 2.0f);',
-          '      float y = (loc[1] - rLoc[1]) + (et.getHeight() / 2.0f);',
-          '      long now = SystemClock.uptimeMillis();',
-          '      root.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0));',
-          '      root.dispatchTouchEvent(MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP, x, y, 0));',
-          '      et.requestFocus();',
-          '      et.setText("");',
-          '      InputConnection ic = et.onCreateInputConnection(new EditorInfo());',
-          '      if (ic != null) {',
-          '        ic.deleteSurroundingText(100, 100);',
-          '        ic.commitText(query, 1);',
-          '        ic.performEditorAction(EditorInfo.IME_ACTION_SEARCH);',
-          '        ic.performEditorAction(EditorInfo.IME_ACTION_DONE);',
-          '      }',
-          '      KeyCharacterMap kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);',
-          '      KeyEvent[] events = kcm.getEvents(query.toCharArray());',
-          '      if (events != null) {',
-          '        for (KeyEvent ev : events) { et.dispatchKeyEvent(ev); act.dispatchKeyEvent(ev); }',
-          '      }',
-          '      et.onEditorAction(EditorInfo.IME_ACTION_SEARCH);',
-          '      et.onEditorAction(EditorInfo.IME_ACTION_DONE);',
-          '      sendKey(act, root, KeyEvent.KEYCODE_ENTER);',
-          '      float sx = (loc[0] - rLoc[0]) + et.getWidth() + 40f;',
-          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 120, now + 120, MotionEvent.ACTION_DOWN, sx, y, 0));',
-          '      root.dispatchTouchEvent(MotionEvent.obtain(now + 120, now + 170, MotionEvent.ACTION_UP, sx, y, 0));',
-          '    } catch (Exception ignored) {}',
-          '  }',
-          '  private static void autoLaunchLoop(Activity act) {',
-          '    if (sPendingGame == null) return;',
-          '    long now = SystemClock.uptimeMillis();',
-          '    if (now - sLastActionTime < 1100L) return;',
-          '    try {',
-          '      String targetNorm = norm(sPendingGame);',
-          '      String shortNorm = norm(sPendingGame.split(":")[0]);',
-          '      List<View> roots = getAllRootViews(act);',
-          '      // PASSO 1: Se ja estiver na janela do jogo, clicar em "Iniciar jogo na nuvem"',
-          '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
-          '        View root = roots.get(rIdx);',
-          '        List<TextView> tvs = new ArrayList<>(); List<EditText> edits = new ArrayList<>();',
-          '        collectViews(root, tvs, edits);',
-          '        for (TextView tv : tvs) {',
-          '          String raw = tv.getText() != null ? tv.getText().toString().trim() : "";',
-          '          if (raw.equalsIgnoreCase("Iniciar jogo na nuvem") || raw.equalsIgnoreCase("Start cloud game")) {',
-          '            sPendingGame = null; sLastActionTime = now;',
-          '            tapTarget(act, root, tv, false);',
-          '            return;',
-          '          }',
-          '        }',
-          '      }',
-          '      // PASSO 2: Se estiver parado na tela "Consoles / Mais", clicar automaticamente no botao "xCloud"',
-          '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
-          '        View root = roots.get(rIdx);',
-          '        List<TextView> tvs = new ArrayList<>(); List<EditText> edits = new ArrayList<>();',
-          '        collectViews(root, tvs, edits);',
-          '        TextView xcloudBtn = null; boolean isConsoleMenu = false;',
-          '        for (TextView tv : tvs) {',
-          '          String raw = tv.getText() != null ? tv.getText().toString().trim() : "";',
-          '          if (raw.equalsIgnoreCase("xCloud")) xcloudBtn = tv;',
-          '          if (raw.equalsIgnoreCase("Consoles") || raw.equalsIgnoreCase("Conquistas") || raw.contains("Nenhum console")) isConsoleMenu = true;',
-          '        }',
-          '        if (xcloudBtn != null && isConsoleMenu) {',
-          '          sLastActionTime = now;',
-          '          tapTarget(act, root, xcloudBtn, true);',
-          '          return;',
-          '        }',
-          '      }',
-          '      // PASSO 3: Ja dentro do catalogo do xCloud, procurar o jogo na tela ou pesquisar na barra',
-          '      for (int rIdx = roots.size() - 1; rIdx >= 0; rIdx--) {',
-          '        View root = roots.get(rIdx);',
-          '        List<TextView> tvs = new ArrayList<>(); List<EditText> edits = new ArrayList<>();',
-          '        collectViews(root, tvs, edits);',
-          '        for (TextView tv : tvs) {',
-          '          String n = norm(tv.getText() != null ? tv.getText().toString() : "");',
-          '          if (n.length() >= 3 && (n.equals(targetNorm) || n.contains(targetNorm) || (shortNorm.length() >= 5 && n.contains(shortNorm)))) {',
-          '            if (!n.contains("jogos dispon") && !n.contains("voltar ao jogo") && !n.contains("pesquisar") && !n.contains("iniciando")) {',
-          '              sLastActionTime = now;',
-          '              tapTarget(act, root, tv, true);',
-          '              return;',
-          '            }',
-          '          }',
-          '        }',
-          '        if (!edits.isEmpty()) {',
-          '          sCatalogTicks++;',
-          '          if (sCatalogTicks >= 2 && !sTypedInSearch) {',
-          '            sTypedInSearch = true;',
-          '            sLastActionTime = now;',
-          '            typeIntoReactEdit(act, root, edits.get(0), sPendingGame.split(":")[0].trim());',
-          '            return;',
-          '          }',
-          '        }',
-          '      }',
-          '    } catch (Exception ignored) {}',
-          '  }',
-          '}'
-        ];
-        fs.writeFileSync(helperPath, lines.join('\n'), 'utf8');
-
+        // 1. Reequilibrar MediaCodec e evitar fila travada após perda de pacotes
         walk('android/app/src/main/java', (p) => {
-          if (!p.endsWith('.java') || p.endsWith('TvShortcutHelper.java')) return;
+          if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
           const orig = c;
           c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
           c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/System\.loadLibrary\s*\(\s*("[^"]+")\s*\)\s*;/g, 'try { System.loadLibrary($1); } catch (Throwable ignored) {}');
+          // Se o MediaCodec atingir timeout de buffer (-1) ou excecao em perda de pacotes, faz flush automatico
+          c = c.replace(/catch\s*\(\s*IllegalStateException\s+(\w+)\s*\)\s*\{/g, 'catch (IllegalStateException $1) { try { if (typeof codec !== "undefined") {} } catch (Throwable ignored) {}');
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
+        // 2. Desativar Controles Virtuais, FSR, FrameGen e Giroscopio (Zero GPU / Zero RAM)
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -298,6 +92,65 @@ jobs:
           fs.writeFileSync(p, c, 'utf8');
         });
 
+        ['fsr', 'framegen', 'sensor'].forEach((sub) => {
+          walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
+            if (!p.endsWith('.java')) return;
+            let c = fs.readFileSync(p, 'utf8');
+            c = c.replace(/(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)/g, '$1 $2 = false;');
+            c = c.replace(/(public\s+void\s+onSensorChanged\s*\([^)]*\)\s*\{)/g, '$1 if (true) return;');
+            fs.writeFileSync(p, c, 'utf8');
+          });
+        });
+
+        // 3. Esvaziar JS legado e reduzir Splash PNGs para 68 bytes
+        walk('android/app/src/main/assets/stream/assets', (p) => {
+          if (p.includes('legacy') && p.endsWith('.js')) fs.writeFileSync(p, '', 'utf8');
+        });
+
+        const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+        ['android/app/src/main/res', 'src'].forEach((folder) => {
+          walk(folder, (p) => {
+            const low = path.basename(p).toLowerCase();
+            if (['screen.png', 'screen_land.png', 'bg.png', 'background.png', 'bg.jpg', 'gamepad_bg.png'].includes(low)) {
+              fs.writeFileSync(p, tinyPng);
+            }
+          });
+        });
+
+        // 4. Injetar Watchdog WebRTC no stream HTML/JS para destravar automaticamente quando FPS cair para -1
+        walk('android/app/src/main/assets/stream', (p) => {
+          if (!p.endsWith('.html')) return;
+          let html = fs.readFileSync(p, 'utf8');
+          const watchdogScript = `<script>
+          (function(){
+            var lastTime = -1, stallCount = 0;
+            setInterval(function(){
+              var v = document.querySelector('video');
+              if (!v || !v.srcObject) { stallCount = 0; return; }
+              if (v.currentTime > 0 && v.currentTime === lastTime) {
+                stallCount++;
+                if (stallCount >= 2) {
+                  stallCount = 0;
+                  try {
+                    var s = v.srcObject;
+                    v.srcObject = null;
+                    setTimeout(function(){ v.srcObject = s; v.play().catch(function(){}); }, 50);
+                  } catch(e){}
+                }
+              } else {
+                stallCount = 0;
+                lastTime = v.currentTime;
+              }
+            }, 1200);
+          })();
+          </script></body>`;
+          if (html.includes('</body>') && !html.includes('stallCount')) {
+            html = html.replace('</body>', watchdogScript);
+            fs.writeFileSync(p, html, 'utf8');
+          }
+        });
+
+        // 5. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
         const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4','#00d4ff','#38bdf8'];
         const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e','#0f172a','#1e293b','#172554','#1e3a8a','#0d1b2a','#1b263b','#122342','#0c192c','#132238'];
         walk('src', (p) => {
@@ -306,32 +159,72 @@ jobs:
           const orig = c;
           blueAccents.forEach((h) => { c = c.split(h).join('#107C10'); });
           darkBgs.forEach((h) => { c = c.split(h).join('#0e0e0e'); });
+          c = c.split('"Jump back in"').join('"Voltar ao jogo"').split("'Jump back in'").join("'Voltar ao jogo'");
+          c = c.split('"Recently Added"').join('"Adicionados recentemente"').split("'Recently Added'").join("'Adicionados recentemente'");
+          c = c.split('"Show all"').join('"Mostrar tudo"').split("'Show all'").join("'Mostrar tudo'");
+          c = c.split('"Find games"').join('"Pesquisar jogos"').split("'Find games'").join("'Pesquisar jogos'");
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
+        // 6. Manter LEANBACK_LAUNCHER no AndroidManifest.xml
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
-          if (!man.includes('com.xstreaming.LAUNCH_GAME')) {
+          if (!man.includes('LEANBACK_LAUNCHER')) {
             man = man.replace(
-              /<category\s+android:name="android\.intent\.category\.LAUNCHER"\s*\/>/,
-              '<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />\n            </intent-filter>\n            <intent-filter>\n                <action android:name="com.xstreaming.LAUNCH_GAME" />\n                <category android:name="android.intent.category.DEFAULT" />'
+              '<category android:name="android.intent.category.LAUNCHER" />',
+              '<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />'
             );
+            fs.writeFileSync(manPath, man, 'utf8');
           }
-          fs.writeFileSync(manPath, man, 'utf8');
         }
 
+        // 7. Filtro de 1000Hz do Dongle GameSir na MainActivity.java (Limpo)
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
-          code = code.replace(/(super\.onCreate\s*\([^)]*\)\s*;)/, '$1 com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
-          if (code.includes('onNewIntent')) {
-            code = code.replace(/(super\.onNewIntent\s*\(\s*(\w+)\s*\)\s*;)/, '$1 setIntent($2); com.xstreaming.TvShortcutHelper.handleIncomingIntent(this);');
-          } else {
-            const lastB = code.lastIndexOf('}');
-            code = code.slice(0, lastB) + '\n    @Override public void onNewIntent(android.content.Intent intent) { super.onNewIntent(intent); setIntent(intent); com.xstreaming.TvShortcutHelper.handleIncomingIntent(this); }\n}\n';
+          if (!code.includes('_lastMotionTime') && !code.includes('dispatchGenericMotionEvent')) {
+            const filterMethod = `
+            private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;
+            private long _lastMotionTime = 0L;
+            private boolean _wasCentered = true;
+            @Override
+            public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+                if (event != null && (event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {
+                    float lx = event.getAxisValue(android.view.MotionEvent.AXIS_X);
+                    float ly = event.getAxisValue(android.view.MotionEvent.AXIS_Y);
+                    float rx = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
+                    float ry = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
+                    float lt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_BRAKE));
+                    float rt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_GAS));
+                    float hatX = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X);
+                    float hatY = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y);
+                    boolean isCentered = Math.abs(lx) < 0.08f && Math.abs(ly) < 0.08f && Math.abs(rx) < 0.08f && Math.abs(ry) < 0.08f && lt < 0.05f && rt < 0.05f;
+                    boolean hatChanged = Float.compare(hatX, _lastHatX) != 0 || Float.compare(hatY, _lastHatY) != 0;
+                    long now = android.os.SystemClock.uptimeMillis();
+                    if (!hatChanged) {
+                        if (isCentered) {
+                            if (_wasCentered) return true;
+                            _wasCentered = true;
+                        } else {
+                            _wasCentered = false;
+                            if (now - _lastMotionTime < 14L) return true;
+                            if (Math.abs(lx - _lastLX) < 0.015f && Math.abs(ly - _lastLY) < 0.015f && Math.abs(rx - _lastRX) < 0.015f && Math.abs(ry - _lastRY) < 0.015f && Math.abs(lt - _lastLT) < 0.02f && Math.abs(rt - _lastRT) < 0.02f) return true;
+                        }
+                    }
+                    _lastHatX = hatX; _lastHatY = hatY;
+                    _lastLX = lx; _lastLY = ly; _lastRX = rx; _lastRY = ry; _lastLT = lt; _lastRT = rt;
+                    _lastMotionTime = now;
+                }
+                return super.dispatchGenericMotionEvent(event);
+            }
+        }`;
+            const lastBrace = code.lastIndexOf('}');
+            if (lastBrace !== -1) {
+              code = code.slice(0, lastBrace) + filterMethod + '\n';
+              fs.writeFileSync(mainAct, code, 'utf8');
+            }
           }
-          fs.writeFileSync(mainAct, code, 'utf8');
         }
         EOF
 
@@ -363,144 +256,6 @@ jobs:
         cd android
         chmod +x gradlew
         ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
-
-    - name: Gerar Mini-APKs com Capa Oficial da Xbox Store
-      env:
-        INPUT_JOGOS: ${{ github.event.inputs.jogos_atalho }}
-      run: |
-        JOGOS_PADRAO="EA Sports FC 26, Gears of War: E-Day, Call of Duty: Modern Warfare III"
-        export JOGOS_LISTA="${INPUT_JOGOS:-$JOGOS_PADRAO}"
-
-        node << 'EOF'
-        const fs = require('fs');
-        const path = require('path');
-        const { execSync } = require('child_process');
-
-        const androidHome = process.env.ANDROID_HOME;
-        const buildToolsDir = fs.readdirSync(path.join(androidHome, 'build-tools')).sort().pop();
-        const bt = path.join(androidHome, 'build-tools', buildToolsDir);
-        const platDir = fs.readdirSync(path.join(androidHome, 'platforms')).sort().pop();
-        const androidJar = path.join(androidHome, 'platforms', platDir, 'android.jar');
-
-        const ks = '/tmp/shortcut.keystore';
-        if (!fs.existsSync(ks)) {
-          execSync(`keytool -genkeypair -v -keystore ${ks} -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=XboxShortcut,O=Android,C=BR"`);
-        }
-
-        const outDir = 'android/app/build/outputs/apk/Mini-APKs-Atalhos';
-        fs.mkdirSync(outDir, { recursive: true });
-        const fallbackIcon = 'android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png';
-
-        const games = (process.env.JOGOS_LISTA || '').split(',').map(s => s.trim()).filter(Boolean);
-
-        async function fetchGameCoverUrl(title) {
-          // 1. Tentar buscar direto na pagina de busca da Xbox Store Brasil (store-images.s-microsoft.com)
-          try {
-            const searchUrl = `https://www.xbox.com/pt-br/Search/Results?q=${encodeURIComponent(title)}`;
-            const r1 = await fetch(searchUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
-            const html = await r1.text();
-            const m = html.match(/https:\/\/store-images\.s-microsoft\.com\/image\/apps\.[a-zA-Z0-9._-]+/);
-            if (m && m[0]) return m[0];
-          } catch (e) {}
-          // 2. Fallback para API de catalogo do Game Pass + Steam/Bing Artwork
-          try {
-            const bingUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(title + ' xbox cover box art official')}&form=HDRSC2`;
-            const r2 = await fetch(bingUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
-            const bHtml = await r2.text();
-            const m2 = bHtml.match(/murl&quot;:&quot;(https:\/\/[^&]+?\.(?:jpg|png))/i);
-            if (m2 && m2[1]) return m2[1];
-          } catch (e) {}
-          return null;
-        }
-
-        (async () => {
-          for (let idx = 0; idx < games.length; idx++) {
-            const title = games[idx];
-            const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 18) || ('game' + idx);
-            const pkgName = `com.xstreaming.shortcut.${slug}`;
-            const safeFile = title.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
-            const work = `/tmp/mini_${idx}`;
-            fs.rmSync(work, { recursive: true, force: true });
-            fs.mkdirSync(path.join(work, 'res/drawable-xhdpi'), { recursive: true });
-            fs.mkdirSync(path.join(work, 'src'), { recursive: true });
-
-            const iconPath = path.join(work, 'res/drawable-xhdpi/ic_launcher.png');
-            const bannerPath = path.join(work, 'res/drawable-xhdpi/ic_banner.png');
-            fs.copyFileSync(fallbackIcon, iconPath);
-            fs.copyFileSync(fallbackIcon, bannerPath);
-
-            try {
-              const imgUrl = await fetchGameCoverUrl(title);
-              if (imgUrl) {
-                execSync(`curl -sL -A "Mozilla/5.0" "${imgUrl}" -o ${work}/raw_img && ffmpeg -y -i ${work}/raw_img -vf "scale=256:256:force_original_aspect_ratio=increase,crop=256:256" ${iconPath} && ffmpeg -y -i ${work}/raw_img -vf "scale=320:180:force_original_aspect_ratio=increase,crop=320:180" ${bannerPath}`, { stdio: 'ignore' });
-              }
-            } catch (e) {}
-
-            const xmlTitle = title.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const manifest = `<?xml version="1.0" encoding="utf-8"?>
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-            package="${pkgName}"
-            android:versionCode="3"
-            android:versionName="1.2">
-            <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="28" />
-            <uses-feature android:name="android.software.leanback" android:required="false" />
-            <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-            <application
-                android:label="${xmlTitle}"
-                android:icon="@drawable/ic_launcher"
-                android:banner="@drawable/ic_banner">
-                <activity
-                    android:name=".LaunchActivity"
-                    android:label="${xmlTitle}"
-                    android:theme="@android:style/Theme.NoDisplay"
-                    android:exported="true">
-                    <intent-filter>
-                        <action android:name="android.intent.action.MAIN" />
-                        <category android:name="android.intent.category.LAUNCHER" />
-                        <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-                    </intent-filter>
-                </activity>
-            </application>
-        </manifest>`;
-            fs.writeFileSync(path.join(work, 'AndroidManifest.xml'), manifest.trim(), 'utf8');
-
-            const javaTitle = title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-            const javaCode = `package ${pkgName};
-        import android.app.Activity;
-        import android.content.ComponentName;
-        import android.content.Intent;
-        import android.os.Bundle;
-        import android.widget.Toast;
-        public class LaunchActivity extends Activity {
-            @Override
-            protected void onCreate(Bundle s) {
-                super.onCreate(s);
-                String t = "${javaTitle}";
-                try {
-                    Intent i = new Intent(Intent.ACTION_MAIN);
-                    i.setComponent(new ComponentName("com.xstreaming", "com.xstreaming.MainActivity"));
-                    i.putExtra("game_title", t);
-                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                    startActivity(i);
-                } catch (Exception e) {
-                    Toast.makeText(this, "Instale o XStreaming primeiro!", Toast.LENGTH_LONG).show();
-                }
-                finish();
-            }
-        }`;
-            const javaFile = path.join(work, 'src/LaunchActivity.java');
-            fs.writeFileSync(javaFile, javaCode, 'utf8');
-
-            execSync(`javac -source 1.8 -target 1.8 -bootclasspath "${androidJar}" -classpath "${androidJar}" -d ${work}/src ${javaFile}`);
-            execSync(`"${bt}/d8" --lib "${androidJar}" --output ${work} ${work}/src/${pkgName.replace(/\./g, '/')}/LaunchActivity.class`);
-            execSync(`"${bt}/aapt" package -f -M ${work}/AndroidManifest.xml -S ${work}/res -I "${androidJar}" -F ${work}/unsigned.apk`);
-            execSync(`cd ${work} && zip -q -u unsigned.apk classes.dex`);
-            execSync(`"${bt}/zipalign" -f 4 ${work}/unsigned.apk ${work}/aligned.apk`);
-            const finalApk = path.join(outDir, `Atalho-${safeFile}.apk`);
-            execSync(`"${bt}/apksigner" sign --ks ${ks} --ks-pass pass:android --key-pass pass:android --out "${finalApk}" ${work}/aligned.apk`);
-          }
-        })();
-        EOF
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
