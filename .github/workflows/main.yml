@@ -13,11 +13,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Limpar base Android e React Native
+    - name: Restaurar base limpa do Mulyu/XStreaming
       run: |
-        git remote add upstream https://github.com/Geocld/XStreaming.git || true
-        git fetch upstream main
-        git checkout upstream/main -- android/ package.json yarn.lock src/ index.js
+        git remote add mulyu https://github.com/Mulyu/XStreaming.git || true
+        git fetch mulyu main
+        git checkout mulyu/main -- android/ package.json yarn.lock src/ index.js
         git clean -fd android/ src/
         echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
@@ -55,7 +55,7 @@ jobs:
           done
         fi
 
-    - name: Apagar Modulos Inuteis, Remover Opcoes Circuladas e Aplicar Tema Xbox
+    - name: Deletar Motores Pesados (C++, WebView, Nano, x86) e Remover Opcoes Circuladas
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -70,7 +70,14 @@ jobs:
           }
         }
 
-        // 1. Apagar fisicamente pastas de binarios x86 e x86_64 (Economiza ~45MB no APK)
+        // 1. DELETAR FISICAMENTE a pasta C++ do Lossless Scaling / FrameGen (lsfg_vendor) e pastas Rust/Nano
+        ['android/app/src/main/cpp', 'rust', 'android/app/src/main/jniLibs'].forEach((dir) => {
+          if (fs.existsSync(dir)) {
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+        });
+
+        // 2. DELETAR FISICAMENTE todas as pastas x86 e x86_64
         function removeCpuDirs(dir) {
           if (!fs.existsSync(dir)) return;
           for (const f of fs.readdirSync(dir)) {
@@ -87,13 +94,12 @@ jobs:
         removeCpuDirs('android');
         removeCpuDirs('node_modules');
 
-        // 2. Apagar fisicamente os pacotes JS do motor WebView e PNGs pesados de fundo
-        walk('android/app/src/main/assets/stream/assets', (p) => {
-          if (p.endsWith('.js') || p.endsWith('.wasm') || p.endsWith('.map')) {
-            fs.writeFileSync(p, '', 'utf8');
-          }
-        });
+        // 3. DELETAR FISICAMENTE os arquivos do motor WebView em assets/stream/assets
+        if (fs.existsSync('android/app/src/main/assets/stream/assets')) {
+          fs.rmSync('android/app/src/main/assets/stream/assets', { recursive: true, force: true });
+        }
 
+        // 4. Substituir imagens pesadas de Splash e fundo por pixel escuro de 68 bytes
         const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
         ['android/app/src/main/res', 'src'].forEach((folder) => {
           walk(folder, (p) => {
@@ -104,7 +110,22 @@ jobs:
           });
         });
 
-        // 3. Esvaziar classes Java de Controle Virtual, FSR, FrameGen (Lossless.dll), Giroscopio e PiP
+        // 5. Desativar compilacao CMake (externalNativeBuild) e ativar divisao de APK por Arquitetura no build.gradle
+        const bgPath = 'android/app/build.gradle';
+        if (fs.existsSync(bgPath)) {
+          let bg = fs.readFileSync(bgPath, 'utf8');
+          // Remover blocos externalNativeBuild que compilavam o C++ do Lossless.dll
+          bg = bg.replace(/externalNativeBuild\s*\{[\s\S]*?\}\s*\}/g, '');
+          bg = bg.replace(/externalNativeBuild\s*\{[^}]*\}/g, '');
+          // Ativar geração de APKs separados por arquitetura (reduz de 62MB para ~24MB)
+          bg = bg.replace(/def enableSeparateBuildPerCPUArchitecture = false/g, 'def enableSeparateBuildPerCPUArchitecture = true');
+          bg = bg.replace(/universalApk true/g, 'universalApk false');
+          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
+          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
+          fs.writeFileSync(bgPath, bg, 'utf8');
+        }
+
+        // 6. Esvaziar classes Java de Controle Virtual, FSR, FrameGen (Lossless), Giroscopio, DualSense e PiP
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -123,7 +144,7 @@ jobs:
           });
         });
 
-        // 4. Proteger System.loadLibrary contra ausencia do NanoRust e reequilibrar MediaCodec
+        // 7. Proteger chamadas JNI (System.loadLibrary e metodos native) para rodar sem os .so deletados
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -135,16 +156,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 5. Remover arquiteturas x86 / x86_64 do build.gradle
-        const bgPath = 'android/app/build.gradle';
-        if (fs.existsSync(bgPath)) {
-          let bg = fs.readFileSync(bgPath, 'utf8');
-          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
-          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
-          fs.writeFileSync(bgPath, bg, 'utf8');
-        }
-
-        // 6. Criar filtro React Native que apaga os blocos completos das opcoes circuladas nas 6 fotos
+        // 8. Filtro React Native para destruir da tela todas as opcoes circuladas nas 6 fotos
         const filterFile = 'src/tv_lite_filter.js';
         const filterCode = `
         const React = require('react');
@@ -328,7 +340,7 @@ jobs:
             Object.defineProperty(el, '_keepRow', { value: state.keep, configurable: true });
           } catch (e) {}
 
-          if (state.kill && !state.keep && state.count <= 5) {
+          if (state.kill && !state.keep && state.count <= 6) {
             try {
               Object.defineProperty(el, '_killRow', { value: true, configurable: true });
               const hideStyle = { display: 'none', height: 0, width: 0, margin: 0, marginTop: 0, marginBottom: 0, padding: 0, paddingTop: 0, paddingBottom: 0, borderWidth: 0, borderBottomWidth: 0, opacity: 0, overflow: 'hidden' };
@@ -382,7 +394,7 @@ jobs:
           }
         }
 
-        // 7. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
+        // 9. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
         const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4','#00d4ff','#38bdf8'];
         const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e','#0f172a','#1e293b','#172554','#1e3a8a','#0d1b2a','#1b263b','#122342','#0c192c','#132238'];
         walk('src', (p) => {
@@ -398,7 +410,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 8. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
+        // 10. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -459,12 +471,12 @@ jobs:
         }
         EOF
 
-    - name: Configure Signing and Disable Nano Rust Build
+    - name: Configure Signing, Strip x86 Libraries and Disable Nano/C++ Tasks
       run: |
         cat << 'EOF' > /tmp/init.gradle
         allprojects {
             tasks.configureEach { task ->
-                if (task.name.contains("NanoRust") || task.name.contains("DevRelease") || task.name.contains("DevDebug")) {
+                if (task.name.contains("NanoRust") || task.name.contains("DevRelease") || task.name.contains("DevDebug") || task.name.contains("externalNativeBuild") || task.name.contains("configureCMake") || task.name.contains("buildCMake")) {
                     task.enabled = false
                 }
             }
@@ -475,6 +487,13 @@ jobs:
                             release {
                                 signingConfig signingConfigs.debug
                             }
+                        }
+                        packagingOptions {
+                            exclude 'lib/x86/**'
+                            exclude 'lib/x86_64/**'
+                            exclude '**/liblsfg*.so'
+                            exclude '**/libframegen*.so'
+                            exclude '**/libnano*.so'
                         }
                     }
                 }
