@@ -33,16 +33,11 @@ jobs:
       with:
         node-version: '20'
 
-    - name: Set up Rust & Android NDK 23.1.7779620
+    - name: Set up Android NDK 23.1.7779620
       run: |
         set +e
         set +o pipefail
-        rustup default stable
-        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
         yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
-        if [ -d "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" ]; then
-          ln -sf "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/darwin-x86_64"
-        fi
         exit 0
 
     - name: Install Dependencies
@@ -254,7 +249,7 @@ jobs:
         fs.mkdirSync(path.dirname(helperPath), { recursive: true });
         fs.writeFileSync(helperPath, helperCode, 'utf8');
 
-        // 2. Otimizar MediaCodec e interceptar apenas variaveis de ShortcutManager
+        // 2. Otimizar MediaCodec, proteger System.loadLibrary (Nano/FSR/LSFG) e conectar ShortcutManager
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java') || p.endsWith('TvShortcutHelper.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -262,6 +257,7 @@ jobs:
           c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
           c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
+          c = c.replace(/System\.loadLibrary\s*\(\s*("[^"]+")\s*\)\s*;/g, 'try { System.loadLibrary($1); } catch (Throwable ignored) {}');
           if (c.includes('ShortcutManager')) {
             c = c.replace(/\b(?!this\b)([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'com.xstreaming.TvShortcutHelper.isSupported($1)');
             c = c.replace(/\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\(/g, 'com.xstreaming.TvShortcutHelper.isSupported(');
@@ -321,15 +317,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 6. Remover arquiteturas x86 / x86_64 do build.gradle
-        const bgPath = 'android/app/build.gradle';
-        if (fs.existsSync(bgPath)) {
-          let bg = fs.readFileSync(bgPath, 'utf8');
-          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
-          fs.writeFileSync(bgPath, bg, 'utf8');
-        }
-
-        // 7. Adicionar permissoes e Slots de Atalhos LEANBACK_LAUNCHER no AndroidManifest.xml
+        // 6. Adicionar permissoes e Slots de Atalhos LEANBACK_LAUNCHER no AndroidManifest.xml
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -349,7 +337,7 @@ jobs:
           fs.writeFileSync(manPath, man, 'utf8');
         }
 
-        // 8. Injetar TvShortcutHelper e Filtro de 1000Hz do Dongle GameSir na MainActivity.java (sem duplicar metodos)
+        // 7. Injetar TvShortcutHelper e Filtro de 1000Hz do Dongle GameSir na MainActivity.java
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
@@ -363,70 +351,4 @@ jobs:
             @Override
             public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
                 com.xstreaming.TvShortcutHelper.sAppContext = getApplicationContext();
-                if (event != null && (event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {
-                    float lx = event.getAxisValue(android.view.MotionEvent.AXIS_X);
-                    float ly = event.getAxisValue(android.view.MotionEvent.AXIS_Y);
-                    float rx = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
-                    float ry = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
-                    float lt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_BRAKE));
-                    float rt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_GAS));
-                    float hatX = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X);
-                    float hatY = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y);
-                    boolean isCentered = Math.abs(lx) < 0.08f && Math.abs(ly) < 0.08f && Math.abs(rx) < 0.08f && Math.abs(ry) < 0.08f && lt < 0.05f && rt < 0.05f;
-                    boolean hatChanged = Float.compare(hatX, _lastHatX) != 0 || Float.compare(hatY, _lastHatY) != 0;
-                    long now = android.os.SystemClock.uptimeMillis();
-                    if (!hatChanged) {
-                        if (isCentered) {
-                            if (_wasCentered) return true;
-                            _wasCentered = true;
-                        } else {
-                            _wasCentered = false;
-                            if (now - _lastMotionTime < 14L) return true;
-                            if (Math.abs(lx - _lastLX) < 0.015f && Math.abs(ly - _lastLY) < 0.015f && Math.abs(rx - _lastRX) < 0.015f && Math.abs(ry - _lastRY) < 0.015f && Math.abs(lt - _lastLT) < 0.02f && Math.abs(rt - _lastRT) < 0.02f) return true;
-                        }
-                    }
-                    _lastHatX = hatX; _lastHatY = hatY;
-                    _lastLX = lx; _lastLY = ly; _lastRX = rx; _lastRY = ry; _lastLT = lt; _lastRT = rt;
-                    _lastMotionTime = now;
-                }
-                return super.dispatchGenericMotionEvent(event);
-            }
-        }`;
-            const lastBrace = code.lastIndexOf('}');
-            if (lastBrace !== -1) {
-              code = code.slice(0, lastBrace) + filterMethod + '\n';
-              fs.writeFileSync(mainAct, code, 'utf8');
-            }
-          }
-        }
-        EOF
-
-    - name: Configure Signing
-      run: |
-        cat << 'EOF' > /tmp/init.gradle
-        allprojects {
-            afterEvaluate { project ->
-                if (project.hasProperty('android')) {
-                    project.android {
-                        buildTypes {
-                            release {
-                                signingConfig signingConfigs.debug
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        EOF
-
-    - name: Build Release APK
-      run: |
-        cd android
-        chmod +x gradlew
-        ./gradlew assembleProdRelease -x lint -x test --init-script /tmp/init.gradle || ./gradlew assembleRelease -x lint -x test --init-script /tmp/init.gradle
-
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: XStreaming-TV-UltraLite-APK
-        path: android/app/build/outputs/apk/**/*.apk
+                if (event != null && (event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JO
