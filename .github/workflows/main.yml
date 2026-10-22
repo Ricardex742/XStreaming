@@ -13,14 +13,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Limpar base Android e React Native
+    - name: Limpar arquivos temporarios e configurar arquiteturas de TV
       run: |
-        git remote add upstream https://github.com/Geocld/XStreaming.git || true
-        git fetch upstream main
-        git checkout upstream/main -- android/ package.json yarn.lock src/
+        git checkout HEAD -- android/ package.json yarn.lock src/ || true
         rm -f android/app/src/main/java/com/xstreaming/TvShortcutHelper.java
         echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
+        sed -i 's/reactNativeArchitectures=.*/reactNativeArchitectures=armeabi-v7a,arm64-v8a/g' android/gradle.properties
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -54,7 +53,7 @@ jobs:
           done
         fi
 
-    - name: Aplicar Ultra-Lite, Tema Xbox e Protecao Anti-Travamento de Video
+    - name: Apagar Modulos Inuteis, Remover Opcoes Circuladas e Aplicar Tema Xbox
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -69,42 +68,28 @@ jobs:
           }
         }
 
-        // 1. Reequilibrar MediaCodec e evitar fila travada após perda de pacotes
-        walk('android/app/src/main/java', (p) => {
-          if (!p.endsWith('.java')) return;
-          let c = fs.readFileSync(p, 'utf8');
-          const orig = c;
-          c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
-          c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
-          c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
-          c = c.replace(/System\.loadLibrary\s*\(\s*("[^"]+")\s*\)\s*;/g, 'try { System.loadLibrary($1); } catch (Throwable ignored) {}');
-          // Se o MediaCodec atingir timeout de buffer (-1) ou excecao em perda de pacotes, faz flush automatico
-          c = c.replace(/catch\s*\(\s*IllegalStateException\s+(\w+)\s*\)\s*\{/g, 'catch (IllegalStateException $1) { try { if (typeof codec !== "undefined") {} } catch (Throwable ignored) {}');
-          if (c !== orig) fs.writeFileSync(p, c, 'utf8');
-        });
+        // 1. Apagar fisicamente pastas de binarios x86 e x86_64 (Economiza ~45MB no APK)
+        function removeCpuDirs(dir) {
+          if (!fs.existsSync(dir)) return;
+          for (const f of fs.readdirSync(dir)) {
+            const p = path.join(dir, f);
+            if (fs.statSync(p).isDirectory()) {
+              if (f === 'x86' || f === 'x86_64') {
+                fs.rmSync(p, { recursive: true, force: true });
+              } else {
+                removeCpuDirs(p);
+              }
+            }
+          }
+        }
+        removeCpuDirs('android');
+        removeCpuDirs('node_modules');
 
-        // 2. Desativar Controles Virtuais, FSR, FrameGen e Giroscopio (Zero GPU / Zero RAM)
-        walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
-          if (!p.endsWith('.java')) return;
-          let c = fs.readFileSync(p, 'utf8');
-          c = c.replace(/(protected\s+void\s+onDraw\s*\([^)]*\)\s*\{)/g, '$1 setVisibility(android.view.View.GONE); if (true) return;');
-          c = c.replace(/(public\s+boolean\s+onTouchEvent\s*\([^)]*\)\s*\{)/g, '$1 if (true) return false;');
-          fs.writeFileSync(p, c, 'utf8');
-        });
-
-        ['fsr', 'framegen', 'sensor'].forEach((sub) => {
-          walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
-            if (!p.endsWith('.java')) return;
-            let c = fs.readFileSync(p, 'utf8');
-            c = c.replace(/(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)/g, '$1 $2 = false;');
-            c = c.replace(/(public\s+void\s+onSensorChanged\s*\([^)]*\)\s*\{)/g, '$1 if (true) return;');
-            fs.writeFileSync(p, c, 'utf8');
-          });
-        });
-
-        // 3. Esvaziar JS legado e reduzir Splash PNGs para 68 bytes
+        // 2. Apagar fisicamente o motor WebView em assets/stream/assets e PNGs pesados de fundo
         walk('android/app/src/main/assets/stream/assets', (p) => {
-          if (p.includes('legacy') && p.endsWith('.js')) fs.writeFileSync(p, '', 'utf8');
+          if (p.endsWith('.js') || p.endsWith('.wasm') || p.endsWith('.map')) {
+            fs.writeFileSync(p, '', 'utf8');
+          }
         });
 
         const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -117,44 +102,266 @@ jobs:
           });
         });
 
-        // 4. Injetar Watchdog WebRTC no stream HTML/JS para destravar automaticamente quando FPS cair para -1
-        walk('android/app/src/main/assets/stream', (p) => {
-          if (!p.endsWith('.html')) return;
-          let html = fs.readFileSync(p, 'utf8');
-          const watchdogScript = `<script>
-          (function(){
-            var lastTime = -1, stallCount = 0;
-            setInterval(function(){
-              var v = document.querySelector('video');
-              if (!v || !v.srcObject) { stallCount = 0; return; }
-              if (v.currentTime > 0 && v.currentTime === lastTime) {
-                stallCount++;
-                if (stallCount >= 2) {
-                  stallCount = 0;
-                  try {
-                    var s = v.srcObject;
-                    v.srcObject = null;
-                    setTimeout(function(){ v.srcObject = s; v.play().catch(function(){}); }, 50);
-                  } catch(e){}
-                }
-              } else {
-                stallCount = 0;
-                lastTime = v.currentTime;
-              }
-            }, 1200);
-          })();
-          </script></body>`;
-          if (html.includes('</body>') && !html.includes('stallCount')) {
-            html = html.replace('</body>', watchdogScript);
-            fs.writeFileSync(p, html, 'utf8');
-          }
+        // 3. Esvaziar classes Java de Controle Virtual, FSR, FrameGen (Lossless.dll), Giroscopio e PiP
+        walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
+          if (!p.endsWith('.java')) return;
+          let c = fs.readFileSync(p, 'utf8');
+          c = c.replace(/(protected\s+void\s+onDraw\s*\([^)]*\)\s*\{)/g, '$1 setVisibility(android.view.View.GONE); if (true) return;');
+          c = c.replace(/(public\s+boolean\s+onTouchEvent\s*\([^)]*\)\s*\{)/g, '$1 if (true) return false;');
+          fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 5. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
+        ['fsr', 'framegen', 'sensor', 'pip', 'dualsense', 'proxy'].forEach((sub) => {
+          walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
+            if (!p.endsWith('.java')) return;
+            let c = fs.readFileSync(p, 'utf8');
+            c = c.replace(/(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)/g, '$1 $2 = false;');
+            c = c.replace(/(public\s+void\s+onSensorChanged\s*\([^)]*\)\s*\{)/g, '$1 if (true) return;');
+            fs.writeFileSync(p, c, 'utf8');
+          });
+        });
+
+        // 4. Proteger carregamento de bibliotecas nativas removidas (NanoRust / LSFG) e otimizar MediaCodec
+        walk('android/app/src/main/java', (p) => {
+          if (!p.endsWith('.java')) return;
+          let c = fs.readFileSync(p, 'utf8');
+          const orig = c;
+          c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
+          c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
+          c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
+          c = c.replace(/System\.loadLibrary\s*\(\s*("[^"]+")\s*\)\s*;/g, 'try { System.loadLibrary($1); } catch (Throwable ignored) {}');
+          if (c !== orig) fs.writeFileSync(p, c, 'utf8');
+        });
+
+        // 5. Remover arquiteturas x86 / x86_64 do build.gradle
+        const bgPath = 'android/app/build.gradle';
+        if (fs.existsSync(bgPath)) {
+          let bg = fs.readFileSync(bgPath, 'utf8');
+          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
+          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
+          fs.writeFileSync(bgPath, bg, 'utf8');
+        }
+
+        // 6. Criar filtro React Native que apaga todas as opcoes e secoes circuladas nas 6 fotos
+        const filterFile = 'src/tv_lite_filter.js';
+        const filterCode = `
+        const React = require('react');
+        const jsxRuntime = require('react/jsx-runtime');
+
+        const EXACT_KILL = new Set([
+          'dualsense',
+          'servidor intermediário',
+          'servidor intermediario',
+          'outros',
+          'sensor',
+          'streaming do console',
+          'controle virtual',
+          'fsr',
+          'picture-in-picture',
+          'nano (experimental)',
+          'webview'
+        ]);
+
+        const SUBSTR_KILL = [
+          'configurar gatilho esquerdo',
+          'escolha como o gatilho esquerdo',
+          'configurar gatilho direito',
+          'escolha como o gatilho direito',
+          'servidor intermediário integrado',
+          'servidor intermediario integrado',
+          'usa um servidor integrado ao xstreaming',
+          'servidor intermediário personalizado',
+          'servidor intermediario personalizado',
+          'toque nativo (experimental)',
+          'ativar o toque nativo',
+          'ativar giroscópio',
+          'ativar giroscopio',
+          'usar o giroscópio do dispositivo',
+          'como ativar o giroscópio',
+          'escolha se o giroscópio será ativado',
+          'sensibilidade do eixo x do giroscópio',
+          'ajustar a sensibilidade do movimento horizontal',
+          'sensibilidade do eixo y do giroscópio',
+          'ajustar a sensibilidade do movimento vertical',
+          'inverter movimento do giroscópio',
+          'movimento do giroscópio pode ficar invertido',
+          'ligar ao iniciar o streaming',
+          'escolha se deseja ligar o console',
+          'servidor de conexão(xhome)',
+          'servidor de conexao(xhome)',
+          'este servidor ajuda a estabelecer a conexão',
+          'sempre mostrar o controle virtual',
+          'transparência dos botões virtuais',
+          'configurar a transparência do controle virtual',
+          'layout do analógico virtual',
+          'escolher se o analógico virtual ficará fixo',
+          'personalizar botões virtuais',
+          'personalize o layout do seu controle virtual',
+          'manter botões automaticamente',
+          'escolha quais botões poderão ser mantidos',
+          'configurações do botão macro virtual',
+          'ativar o botão macro e editar sua sequência',
+          'ative o fsr',
+          'fidelityfx super resolution',
+          'geração inteligente de quadros',
+          'após importar o lossless.dll',
+          'importar lossless.dll',
+          'prepare um arquivo de origem legal',
+          'formato do vídeo',
+          'selecione como o vídeo será exibido',
+          'colocar o streaming em segundo plano abrirá o modo picture-in-picture'
+        ];
+
+        function classifyString(raw) {
+          if (typeof raw !== 'string') return 0;
+          const s = raw.trim().toLowerCase();
+          if (!s) return 0;
+          if (EXACT_KILL.has(s)) return -1;
+          for (let i = 0; i < SUBSTR_KILL.length; i++) {
+            if (s.includes(SUBSTR_KILL[i])) return -1;
+          }
+          if (/[a-z0-9\u00C0-\u017F]{2,}/i.test(s)) return 1;
+          return 0;
+        }
+
+        function scanChildren(node, state) {
+          if (node == null || typeof node === 'boolean' || typeof node === 'number') return;
+          if (typeof node === 'string') {
+            const c = classifyString(node);
+            if (c === -1) state.kill = true;
+            else if (c === 1) state.good = true;
+            return;
+          }
+          if (Array.isArray(node)) {
+            for (let i = 0; i < node.length; i++) scanChildren(node[i], state);
+            return;
+          }
+          if (typeof node === 'object') {
+            if (node._killRow) state.kill = true;
+            if (node._hasGood) state.good = true;
+            if (!node._killRow && !node._hasGood && node.props) {
+              scanProps(node.props, state);
+            }
+          }
+        }
+
+        function scanProps(props, state) {
+          if (!props) return;
+          const keys = ['title', 'label', 'name', 'description', 'subTitle', 'subtitle', 'header', 'text'];
+          for (let i = 0; i < keys.length; i++) {
+            if (typeof props[keys[i]] === 'string') {
+              const c = classifyString(props[keys[i]]);
+              if (c === -1) state.kill = true;
+              else if (c === 1) state.good = true;
+            }
+          }
+          if (props.children !== undefined) {
+            scanChildren(props.children, state);
+          }
+        }
+
+        function filterKilledChildren(children) {
+          if (Array.isArray(children)) {
+            const out = [];
+            for (let i = 0; i < children.length; i++) {
+              const ch = children[i];
+              if (ch && typeof ch === 'object' && ch._killRow && !ch._hasGood) continue;
+              if (Array.isArray(ch)) out.push(filterKilledChildren(ch));
+              else out.push(ch);
+            }
+            return out;
+          }
+          if (children && typeof children === 'object' && children._killRow && !children._hasGood) {
+            return null;
+          }
+          return children;
+        }
+
+        const wrappedFns = new WeakMap();
+        function wrapComponent(fn) {
+          if (typeof fn !== 'function' || (fn.prototype && fn.prototype.isReactComponent)) return fn;
+          if (wrappedFns.has(fn)) return wrappedFns.get(fn);
+          const wrapped = function(props, ref) {
+            const res = fn(props, ref);
+            if (res && typeof res === 'object' && res._killRow && !res._hasGood) return null;
+            return res;
+          };
+          try { Object.assign(wrapped, fn); } catch (e) {}
+          wrappedFns.set(fn, wrapped);
+          return wrapped;
+        }
+
+        function processElement(el) {
+          if (!el || typeof el !== 'object' || !el.props) return el;
+          const state = { kill: false, good: false };
+          scanProps(el.props, state);
+
+          if (state.kill && !state.good) {
+            try {
+              Object.defineProperty(el, '_killRow', { value: true, configurable: true });
+              Object.defineProperty(el, '_hasGood', { value: false, configurable: true });
+              const hideStyle = { display: 'none', height: 0, width: 0, margin: 0, marginTop: 0, marginBottom: 0, padding: 0, paddingTop: 0, paddingBottom: 0, borderWidth: 0, borderBottomWidth: 0, opacity: 0, overflow: 'hidden' };
+              const nextProps = Object.assign({}, el.props, {
+                style: el.props.style ? [el.props.style, hideStyle] : hideStyle
+              });
+              Object.defineProperty(el, 'props', { value: nextProps, configurable: true });
+            } catch (e) {}
+            return el;
+          }
+
+          if (state.kill && state.good && el.props.children !== undefined) {
+            try {
+              const cleaned = filterKilledChildren(el.props.children);
+              const nextProps = Object.assign({}, el.props, { children: cleaned });
+              Object.defineProperty(el, 'props', { value: nextProps, configurable: true });
+            } catch (e) {}
+          }
+
+          if (state.good) {
+            try {
+              Object.defineProperty(el, '_hasGood', { value: true, configurable: true });
+            } catch (e) {}
+          }
+          return el;
+        }
+
+        const origCreateElement = React.createElement;
+        React.createElement = function(type, props, ...children) {
+          const wType = wrapComponent(type);
+          const el = origCreateElement.apply(this, [wType, props, ...children]);
+          return processElement(el);
+        };
+
+        if (jsxRuntime) {
+          if (jsxRuntime.jsx) {
+            const origJsx = jsxRuntime.jsx;
+            jsxRuntime.jsx = function(type, props, key) {
+              return processElement(origJsx(wrapComponent(type), props, key));
+            };
+          }
+          if (jsxRuntime.jsxs) {
+            const origJsxs = jsxRuntime.jsxs;
+            jsxRuntime.jsxs = function(type, props, key) {
+              return processElement(origJsxs(wrapComponent(type), props, key));
+            };
+          }
+        }
+        `;
+        fs.writeFileSync(filterFile, filterCode.trim() + '\n', 'utf8');
+
+        if (fs.existsSync('index.js')) {
+          let idxCode = fs.readFileSync('index.js', 'utf8');
+          if (!idxCode.includes('tv_lite_filter')) {
+            idxCode = `import './src/tv_lite_filter';\n` + idxCode;
+            fs.writeFileSync('index.js', idxCode, 'utf8');
+          }
+        }
+
+        // 7. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10) e limpar textos do Nano/WebView
         const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4','#00d4ff','#38bdf8'];
         const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e','#0f172a','#1e293b','#172554','#1e3a8a','#0d1b2a','#1b263b','#122342','#0c192c','#132238'];
         walk('src', (p) => {
-          if (!/\.(ts|tsx|js|jsx|json)$/.test(p)) return;
+          if (!/\.(ts|tsx|js|jsx|json)$/.test(p) || p.endsWith('tv_lite_filter.js')) return;
           let c = fs.readFileSync(p, 'utf8');
           const orig = c;
           blueAccents.forEach((h) => { c = c.split(h).join('#107C10'); });
@@ -166,7 +373,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 6. Manter LEANBACK_LAUNCHER no AndroidManifest.xml
+        // 8. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -179,7 +386,6 @@ jobs:
           }
         }
 
-        // 7. Filtro de 1000Hz do Dongle GameSir na MainActivity.java (Limpo)
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
