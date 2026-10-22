@@ -73,6 +73,13 @@ jobs:
         public class TvShortcutHelper {
             public static Context sAppContext;
 
+            public static boolean isSupported(Object obj) {
+                if (obj instanceof Context) {
+                    sAppContext = ((Context) obj).getApplicationContext();
+                }
+                return true;
+            }
+
             public static void handleIncomingIntent(Activity activity) {
                 if (activity == null) return;
                 sAppContext = activity.getApplicationContext();
@@ -217,10 +224,8 @@ jobs:
           c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
           c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
-          c = c.replace(/!\s*\b([a-zA-Z_]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'false');
-          c = c.replace(/\b([a-zA-Z_]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'true');
-          c = c.replace(/!\s*\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\([^)]+\)/g, 'false');
-          c = c.replace(/\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\([^)]+\)/g, 'true');
+          c = c.replace(/\b([a-z]\w*)\.isRequestPinShortcutSupported\s*\(\s*\)/g, 'com.xstreaming.TvShortcutHelper.isSupported($1)');
+          c = c.replace(/\bShortcutManagerCompat\.isRequestPinShortcutSupported\s*\(/g, 'com.xstreaming.TvShortcutHelper.isSupported(');
           c = c.replace(/\b([a-z]\w*)\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinOnTv($1, ');
           c = c.replace(/\bShortcutManagerCompat\.requestPinShortcut\s*\(/g, 'com.xstreaming.TvShortcutHelper.pinCompatOnTv(');
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
@@ -358,10 +363,14 @@ jobs:
 
     - name: Set up Rust & Android NDK 23.1.7779620
       run: |
-        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses \vert{}\vert{} true$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
-        if [ -d "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" ]; then
-          ln -sf "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64" "$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt/darwin-x86_64" || true
+        rustup default stable || true
+        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android || true
+        SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+        yes | "$SDKM" --licenses || true
+        yes | "$SDKM" --install "ndk;23.1.7779620" "cmake;3.22.1" \vert{}\vert{} yes \vert{} "$SDKM" --install "ndk;23.1.7779620" "cmake;3.22.1"
+        NDK_PRE="$ANDROID_HOME/ndk/23.1.7779620/toolchains/llvm/prebuilt"
+        if [ -d "$NDK_PRE/linux-x86_64" ]; then
+          ln -sf "$NDK_PRE/linux-x86_64" "$NDK_PRE/darwin-x86_64" || true
         fi
 
     - name: Install Dependencies
