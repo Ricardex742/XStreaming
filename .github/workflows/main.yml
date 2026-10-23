@@ -55,7 +55,7 @@ jobs:
           done
         fi
 
-    - name: Apagar Modulos Inuteis, Remover Opcoes Circuladas e Aplicar Tema Xbox
+    - name: Pular Tela Consoles, Remover Opcoes Circuladas e Aplicar Tema Xbox
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -70,7 +70,7 @@ jobs:
           }
         }
 
-        // 1. Esvaziar apenas scripts legados pesados e reduzir PNGs de fundo para 68 bytes
+        // 1. Esvaziar scripts legados pesados e reduzir PNGs de fundo para 68 bytes
         walk('android/app/src/main/assets/stream/assets', (p) => {
           if (p.includes('legacy') && p.endsWith('.js')) {
             fs.writeFileSync(p, '', 'utf8');
@@ -118,7 +118,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 4. Remover x86 / x86_64 do build.gradle (mesma regra que compilou com sucesso)
+        // 4. Remover x86 / x86_64 do build.gradle
         const bgPath = 'android/app/build.gradle';
         if (fs.existsSync(bgPath)) {
           let bg = fs.readFileSync(bgPath, 'utf8');
@@ -127,7 +127,7 @@ jobs:
           fs.writeFileSync(bgPath, bg, 'utf8');
         }
 
-        // 5. Filtro React Native seguro com WeakSet (Sem wrapComponent e sem Object.defineProperty para nao fechar na abertura)
+        // 5. Filtro React Native: Pula a tela "Consoles / Mais" direto para "xCloud" e remove opcoes circuladas
         const filterFile = 'src/tv_lite_filter.js';
         const filterCode = `
         try {
@@ -136,7 +136,10 @@ jobs:
 
           const killedSet = new WeakSet();
           const keptSet = new WeakSet();
+          const xcloudSet = new WeakSet();
+          const consoleScreenSet = new WeakSet();
           const countMap = new WeakMap();
+          let lastXcloudTrigger = 0;
 
           function norm(str) {
             if (typeof str !== 'string') return '';
@@ -202,6 +205,18 @@ jobs:
             'colocar o streaming em segundo plano abrira o modo picture-in-picture'
           ];
 
+          const CONSOLE_SCREEN_EXACT = new Set([
+            'consoles',
+            'mais',
+            'conquistas',
+            'atualizar'
+          ]);
+
+          const CONSOLE_SCREEN_SUBSTR = [
+            'nenhum console foi encontrado nesta conta',
+            'verifique se o remote play esta ativado'
+          ];
+
           const PROTECTED_SUBSTR = [
             'definir resolucao',
             'priorizar conexao ipv6',
@@ -212,23 +227,36 @@ jobs:
             'voltar',
             'iniciar jogo',
             'voltar ao jogo',
-            'pesquisar jogos'
+            'pesquisar jogos',
+            'jogos disponiveis',
+            'jogar com game pass'
           ];
 
           function checkText(raw) {
             const s = norm(raw);
-            if (!s) return { kill: false, keep: false, count: 0 };
+            if (!s) return { kill: false, keep: false, isXcloud: false, isConsoleUI: false, count: 0 };
+            if (s === 'xcloud') {
+              return { kill: false, keep: true, isXcloud: true, isConsoleUI: true, count: 1 };
+            }
+            if (CONSOLE_SCREEN_EXACT.has(s)) {
+              return { kill: false, keep: false, isXcloud: false, isConsoleUI: true, count: 1 };
+            }
+            for (let i = 0; i < CONSOLE_SCREEN_SUBSTR.length; i++) {
+              if (s.includes(CONSOLE_SCREEN_SUBSTR[i])) {
+                return { kill: false, keep: false, isXcloud: false, isConsoleUI: true, count: 1 };
+              }
+            }
             if (s === 'native' || s === 'configuracoes' || s === 'resolucao' || s === 'ipv6' || s === 'audio') {
-              return { kill: false, keep: true, count: 1 };
+              return { kill: false, keep: true, isXcloud: false, isConsoleUI: false, count: 1 };
             }
             for (let i = 0; i < PROTECTED_SUBSTR.length; i++) {
-              if (s.includes(PROTECTED_SUBSTR[i])) return { kill: false, keep: true, count: 1 };
+              if (s.includes(PROTECTED_SUBSTR[i])) return { kill: false, keep: true, isXcloud: false, isConsoleUI: false, count: 1 };
             }
-            if (EXACT_KILL.has(s)) return { kill: true, keep: false, count: 1 };
+            if (EXACT_KILL.has(s)) return { kill: true, keep: false, isXcloud: false, isConsoleUI: false, count: 1 };
             for (let i = 0; i < SUBSTR_KILL.length; i++) {
-              if (s.includes(SUBSTR_KILL[i])) return { kill: true, keep: false, count: 1 };
+              if (s.includes(SUBSTR_KILL[i])) return { kill: true, keep: false, isXcloud: false, isConsoleUI: false, count: 1 };
             }
-            return { kill: false, keep: false, count: s.length > 1 ? 1 : 0 };
+            return { kill: false, keep: false, isXcloud: false, isConsoleUI: false, count: s.length > 1 ? 1 : 0 };
           }
 
           function scanNode(node, state) {
@@ -237,6 +265,8 @@ jobs:
               const r = checkText(node);
               if (r.kill) state.kill = true;
               if (r.keep) state.keep = true;
+              if (r.isXcloud) state.isXcloud = true;
+              if (r.isConsoleUI) state.isConsoleUI = true;
               state.count += r.count;
               return;
             }
@@ -247,6 +277,8 @@ jobs:
             if (typeof node === 'object') {
               if (killedSet.has(node)) state.kill = true;
               if (keptSet.has(node)) state.keep = true;
+              if (xcloudSet.has(node)) state.isXcloud = true;
+              if (consoleScreenSet.has(node)) state.isConsoleUI = true;
               if (countMap.has(node)) {
                 state.count += countMap.get(node);
               } else if (node.props) {
@@ -263,6 +295,8 @@ jobs:
                 const r = checkText(props[keys[i]]);
                 if (r.kill) state.kill = true;
                 if (r.keep) state.keep = true;
+                if (r.isXcloud) state.isXcloud = true;
+                if (r.isConsoleUI) state.isConsoleUI = true;
                 state.count += r.count;
               }
             }
@@ -287,16 +321,48 @@ jobs:
             overflow: 'hidden'
           };
 
+          const INVISIBLE_CONSOLE_STYLE = {
+            opacity: 0
+          };
+
           function evaluateAndStyle(type, props, childrenArgs) {
-            if (!props || type === React.Fragment) return { props, markKill: false, markKeep: false, count: 0 };
-            if (props.navigation || props.route || props.component || props.initialRouteName || props.screens) {
-              return { props, markKill: false, markKeep: true, count: 10 };
+            if (!props || type === React.Fragment) {
+              return { props, markKill: false, markKeep: false, markXcloud: false, markConsoleUI: false, count: 0 };
             }
-            const state = { kill: false, keep: false, count: 0 };
+            if (props.navigation || props.route || props.component || props.initialRouteName || props.screens) {
+              return { props, markKill: false, markKeep: true, markXcloud: false, markConsoleUI: false, count: 10 };
+            }
+            const state = { kill: false, keep: false, isXcloud: false, isConsoleUI: false, count: 0 };
             scanProps(props, state);
             if (childrenArgs && childrenArgs.length > 0) {
               scanNode(childrenArgs, state);
             }
+
+            // Se encontrou o card clicavel "xCloud" da primeira tela, dispara a entrada automatica para a tela de jogos
+            if (state.isXcloud) {
+              const pressFn = props.onPress || props.onClick || props.onResponderRelease;
+              if (typeof pressFn === 'function') {
+                const now = Date.now();
+                if (now - lastXcloudTrigger > 800) {
+                  lastXcloudTrigger = now;
+                  setTimeout(function() {
+                    try { pressFn(); } catch (e) {}
+                  }, 25);
+                  setTimeout(function() {
+                    try { pressFn(); } catch (e) {}
+                  }, 220);
+                }
+              }
+            }
+
+            // Oculta visualmente os blocos da primeira tela (Consoles / Mais) enquanto redireciona para o xCloud
+            if (state.isConsoleUI && state.count <= 6) {
+              const nextProps = Object.assign({}, props, {
+                style: props.style ? [props.style, INVISIBLE_CONSOLE_STYLE] : INVISIBLE_CONSOLE_STYLE
+              });
+              return { props: nextProps, markKill: false, markKeep: state.keep, markXcloud: state.isXcloud, markConsoleUI: true, count: state.count };
+            }
+
             if (state.kill && !state.keep && state.count <= 4) {
               const nextProps = Object.assign({}, props, {
                 style: props.style ? [props.style, HIDE_STYLE] : HIDE_STYLE,
@@ -304,9 +370,9 @@ jobs:
                 accessible: false,
                 pointerEvents: 'none'
               });
-              return { props: nextProps, markKill: true, markKeep: false, count: state.count };
+              return { props: nextProps, markKill: true, markKeep: false, markXcloud: false, markConsoleUI: false, count: state.count };
             }
-            return { props, markKill: false, markKeep: state.keep, count: state.count };
+            return { props, markKill: false, markKeep: state.keep, markXcloud: state.isXcloud, markConsoleUI: state.isConsoleUI, count: state.count };
           }
 
           function tagElement(el, info) {
@@ -315,6 +381,8 @@ jobs:
                 countMap.set(el, info.count);
                 if (info.markKill) killedSet.add(el);
                 if (info.markKeep) keptSet.add(el);
+                if (info.markXcloud) xcloudSet.add(el);
+                if (info.markConsoleUI) consoleScreenSet.add(el);
               } catch (e) {}
             }
             return el;
@@ -383,7 +451,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 7. Garantir extractNativeLibs="true" (evita crash ao abrir APK reduzido) e LEANBACK_LAUNCHER
+        // 7. Garantir extractNativeLibs="true" e LEANBACK_LAUNCHER no AndroidManifest.xml
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -401,11 +469,61 @@ jobs:
           fs.writeFileSync(manPath, man, 'utf8');
         }
 
+        // 8. Injetar Fallback Nativo de Auto-Entrada no xCloud + Filtro 1000Hz GameSir na MainActivity.java
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
         if (fs.existsSync(mainAct)) {
           let code = fs.readFileSync(mainAct, 'utf8');
-          if (!code.includes('_lastMotionTime') && !code.includes('dispatchGenericMotionEvent')) {
-            const filterMethod = `
+          code = code.replace(/(super\.onCreate\s*\([^)]*\)\s*;)/, '$1 startDirectXcloudWatcher();');
+          if (!code.includes('startDirectXcloudWatcher')) {
+            const extraMethods = `
+            private boolean _watcherStarted = false;
+            private long _lastXcloudTap = 0L;
+            private void startDirectXcloudWatcher() {
+                if (_watcherStarted) return;
+                _watcherStarted = true;
+                final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                h.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            if (getWindow() != null && getWindow().getDecorView() != null) {
+                                android.view.View root = getWindow().getDecorView();
+                                java.util.List<android.widget.TextView> tvs = new java.util.ArrayList<>();
+                                collectTextViews(root, tvs);
+                                android.widget.TextView xcloudTv = null;
+                                boolean onConsoleScreen = false;
+                                for (android.widget.TextView tv : tvs) {
+                                    String t = tv.getText() != null ? tv.getText().toString().trim() : "";
+                                    if (t.equalsIgnoreCase("xCloud")) xcloudTv = tv;
+                                    if (t.equalsIgnoreCase("Consoles") || t.equalsIgnoreCase("Conquistas") || t.contains("Nenhum console")) onConsoleScreen = true;
+                                }
+                                long now = android.os.SystemClock.uptimeMillis();
+                                if (xcloudTv != null && onConsoleScreen && (now - _lastXcloudTap > 900L)) {
+                                    _lastXcloudTap = now;
+                                    int[] loc = new int[2];
+                                    xcloudTv.getLocationOnScreen(loc);
+                                    int[] rLoc = new int[2];
+                                    root.getLocationOnScreen(rLoc);
+                                    float x = (loc[0] - rLoc[0]) + (xcloudTv.getWidth() / 2.0f);
+                                    float y = (loc[1] - rLoc[1]) - 20.0f;
+                                    if (y < 10f) y = (loc[1] - rLoc[1]) + (xcloudTv.getHeight() / 2.0f);
+                                    root.dispatchTouchEvent(android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_DOWN, x, y, 0));
+                                    root.dispatchTouchEvent(android.view.MotionEvent.obtain(now, now + 40, android.view.MotionEvent.ACTION_UP, x, y, 0));
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                        h.postDelayed(this, 250);
+                    }
+                }, 150);
+            }
+            private void collectTextViews(android.view.View v, java.util.List<android.widget.TextView> out) {
+                if (v == null || v.getVisibility() != android.view.View.VISIBLE) return;
+                if (v instanceof android.widget.TextView) out.add((android.widget.TextView) v);
+                else if (v instanceof android.view.ViewGroup) {
+                    android.view.ViewGroup vg = (android.view.ViewGroup) v;
+                    for (int i = 0; i < vg.getChildCount(); i++) collectTextViews(vg.getChildAt(i), out);
+                }
+            }
             private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;
             private long _lastMotionTime = 0L;
             private boolean _wasCentered = true;
@@ -442,7 +560,7 @@ jobs:
         }`;
             const lastBrace = code.lastIndexOf('}');
             if (lastBrace !== -1) {
-              code = code.slice(0, lastBrace) + filterMethod + '\n';
+              code = code.slice(0, lastBrace) + extraMethods + '\n';
               fs.writeFileSync(mainAct, code, 'utf8');
             }
           }
@@ -494,7 +612,6 @@ jobs:
           cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk"
           cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-64bit-arm64-v8a.apk"
 
-          # Remover arquiteturas desnecessarias preservando os cabecalhos nativos do ZIP
           zip -q -d "$ORIG_APK" "lib/x86/*" "lib/x86_64/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
           zip -q -d "$OUT_DIR/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk" "lib/x86/*" "lib/x86_64/*" "lib/arm64-v8a/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
           zip -q -d "$OUT_DIR/XStreaming-UltraLeve-64bit-arm64-v8a.apk" "lib/x86/*" "lib/x86_64/*" "lib/armeabi-v7a/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
