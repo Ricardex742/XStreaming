@@ -55,7 +55,7 @@ jobs:
           done
         fi
 
-    - name: Ativar APK Ultra-Leve Nativo, Remover Opcoes Circuladas e Aplicar Tema Xbox
+    - name: Apagar Modulos Inuteis, Remover Opcoes Circuladas e Aplicar Tema Xbox
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -70,19 +70,7 @@ jobs:
           }
         }
 
-        // 1. Ativar divisao oficial de APKs leves no Gradle (sem x86/x86_64 e sem corromper binarios)
-        const bgPath = 'android/app/build.gradle';
-        if (fs.existsSync(bgPath)) {
-          let bg = fs.readFileSync(bgPath, 'utf8');
-          bg = bg.replace(/def\s+enableSeparateBuildPerCPUArchitecture\s*=\s*false/g, 'def enableSeparateBuildPerCPUArchitecture = true');
-          bg = bg.replace(/universalApk\s+false/g, 'universalApk true');
-          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
-          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
-          bg = bg.replace(/"x86",\s*/g, '').replace(/,\s*"x86_64"/g, '');
-          fs.writeFileSync(bgPath, bg, 'utf8');
-        }
-
-        // 2. Esvaziar apenas scripts legados pesados e reduzir imagens de fundo para 68 bytes
+        // 1. Esvaziar apenas scripts legados pesados e reduzir PNGs de fundo para 68 bytes
         walk('android/app/src/main/assets/stream/assets', (p) => {
           if (p.includes('legacy') && p.endsWith('.js')) {
             fs.writeFileSync(p, '', 'utf8');
@@ -99,7 +87,7 @@ jobs:
           });
         });
 
-        // 3. Desativar renderizacao de Controle Virtual, FSR, FrameGen e Giroscopio
+        // 2. Desativar classes Java de Controle Virtual, FSR, FrameGen, Giroscopio e PiP
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -108,7 +96,7 @@ jobs:
           fs.writeFileSync(p, c, 'utf8');
         });
 
-        ['fsr', 'framegen', 'sensor', 'pip'].forEach((sub) => {
+        ['fsr', 'framegen', 'sensor', 'pip', 'dualsense', 'proxy'].forEach((sub) => {
           walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
             if (!p.endsWith('.java')) return;
             let c = fs.readFileSync(p, 'utf8');
@@ -118,7 +106,7 @@ jobs:
           });
         });
 
-        // 4. Proteger System.loadLibrary e otimizar MediaCodec
+        // 3. Proteger System.loadLibrary contra ausencia do NanoRust e reequilibrar MediaCodec
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -130,7 +118,16 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 5. Filtro seguro com WeakSet (sem alterar tipos do React Navigation e sem Object.defineProperty)
+        // 4. Remover x86 / x86_64 do build.gradle (mesma regra que compilou com sucesso)
+        const bgPath = 'android/app/build.gradle';
+        if (fs.existsSync(bgPath)) {
+          let bg = fs.readFileSync(bgPath, 'utf8');
+          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
+          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
+          fs.writeFileSync(bgPath, bg, 'utf8');
+        }
+
+        // 5. Filtro React Native seguro com WeakSet (Sem wrapComponent e sem Object.defineProperty para nao fechar na abertura)
         const filterFile = 'src/tv_lite_filter.js';
         const filterCode = `
         try {
@@ -386,7 +383,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 7. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
+        // 7. Garantir extractNativeLibs="true" (evita crash ao abrir APK reduzido) e LEANBACK_LAUNCHER
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -395,8 +392,13 @@ jobs:
               '<category android:name="android.intent.category.LAUNCHER" />',
               '<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />'
             );
-            fs.writeFileSync(manPath, man, 'utf8');
           }
+          if (man.includes('android:extractNativeLibs="false"')) {
+            man = man.replace('android:extractNativeLibs="false"', 'android:extractNativeLibs="true"');
+          } else if (!man.includes('android:extractNativeLibs')) {
+            man = man.replace('<application', '<application android:extractNativeLibs="true"');
+          }
+          fs.writeFileSync(manPath, man, 'utf8');
         }
 
         const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
@@ -475,7 +477,36 @@ jobs:
         cd android
         chmod +x gradlew
         ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
-        ls -lh app/build/outputs/apk/prod/release/
+
+    - name: Cortar Peso do APK (Remover x86/x86_64 e Gerar Versoes Ultra-Leves)
+      run: |
+        set +e
+        BT_DIR=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
+        BT="$ANDROID_HOME/build-tools/$BT_DIR"
+        KS="/tmp/ultralite.keystore"
+        rm -f "$KS"
+        keytool -genkeypair -v -keystore "$KS" -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+
+        ORIG_APK="android/app/build/outputs/apk/prod/release/app-prod-release.apk"
+        OUT_DIR="android/app/build/outputs/apk/prod/release"
+
+        if [ -f "$ORIG_APK" ]; then
+          cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk"
+          cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-64bit-arm64-v8a.apk"
+
+          # Remover arquiteturas desnecessarias preservando os cabecalhos nativos do ZIP
+          zip -q -d "$ORIG_APK" "lib/x86/*" "lib/x86_64/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
+          zip -q -d "$OUT_DIR/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk" "lib/x86/*" "lib/x86_64/*" "lib/arm64-v8a/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
+          zip -q -d "$OUT_DIR/XStreaming-UltraLeve-64bit-arm64-v8a.apk" "lib/x86/*" "lib/x86_64/*" "lib/armeabi-v7a/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
+
+          for apk in "$OUT_DIR"/*.apk; do
+            "$BT/zipalign" -f -p 4 "$apk" "${apk}.aligned" && mv "${apk}.aligned" "$apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$apk"
+            rm -f "${apk}.idsig"
+            echo "APK Pronto: $(basename "$apk") -> $(du -h "$apk" | cut -f1)"
+          done
+        fi
+        exit 0
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
