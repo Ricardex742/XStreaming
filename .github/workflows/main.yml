@@ -55,7 +55,7 @@ jobs:
           done
         fi
 
-    - name: Apagar Modulos Inuteis, Remover Opcoes Circuladas e Aplicar Tema Xbox
+    - name: Ativar APK Ultra-Leve Nativo, Remover Opcoes Circuladas e Aplicar Tema Xbox
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -70,9 +70,21 @@ jobs:
           }
         }
 
-        // 1. Esvaziar os pacotes do motor WebView em assets/stream/assets e PNGs pesados de fundo
+        // 1. Ativar divisao oficial de APKs leves no Gradle (sem x86/x86_64 e sem corromper binarios)
+        const bgPath = 'android/app/build.gradle';
+        if (fs.existsSync(bgPath)) {
+          let bg = fs.readFileSync(bgPath, 'utf8');
+          bg = bg.replace(/def\s+enableSeparateBuildPerCPUArchitecture\s*=\s*false/g, 'def enableSeparateBuildPerCPUArchitecture = true');
+          bg = bg.replace(/universalApk\s+false/g, 'universalApk true');
+          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
+          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
+          bg = bg.replace(/"x86",\s*/g, '').replace(/,\s*"x86_64"/g, '');
+          fs.writeFileSync(bgPath, bg, 'utf8');
+        }
+
+        // 2. Esvaziar apenas scripts legados pesados e reduzir imagens de fundo para 68 bytes
         walk('android/app/src/main/assets/stream/assets', (p) => {
-          if (p.endsWith('.js') || p.endsWith('.wasm') || p.endsWith('.map')) {
+          if (p.includes('legacy') && p.endsWith('.js')) {
             fs.writeFileSync(p, '', 'utf8');
           }
         });
@@ -87,7 +99,7 @@ jobs:
           });
         });
 
-        // 2. Esvaziar classes Java de Controle Virtual, FSR, FrameGen, Giroscopio e PiP
+        // 3. Desativar renderizacao de Controle Virtual, FSR, FrameGen e Giroscopio
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -96,7 +108,7 @@ jobs:
           fs.writeFileSync(p, c, 'utf8');
         });
 
-        ['fsr', 'framegen', 'sensor', 'pip', 'dualsense', 'proxy'].forEach((sub) => {
+        ['fsr', 'framegen', 'sensor', 'pip'].forEach((sub) => {
           walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
             if (!p.endsWith('.java')) return;
             let c = fs.readFileSync(p, 'utf8');
@@ -106,7 +118,7 @@ jobs:
           });
         });
 
-        // 3. Proteger System.loadLibrary contra ausencia do NanoRust e reequilibrar MediaCodec
+        // 4. Proteger System.loadLibrary e otimizar MediaCodec
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -118,241 +130,235 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 4. Remover arquiteturas x86 / x86_64 do build.gradle
-        const bgPath = 'android/app/build.gradle';
-        if (fs.existsSync(bgPath)) {
-          let bg = fs.readFileSync(bgPath, 'utf8');
-          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
-          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
-          fs.writeFileSync(bgPath, bg, 'utf8');
-        }
-
-        // 5. Filtro React Native para apagar da tela todas as opcoes circuladas nas 6 fotos
+        // 5. Filtro seguro com WeakSet (sem alterar tipos do React Navigation e sem Object.defineProperty)
         const filterFile = 'src/tv_lite_filter.js';
         const filterCode = `
-        const React = require('react');
-        const jsxRuntime = require('react/jsx-runtime');
+        try {
+          const React = require('react');
+          const jsxRuntime = require('react/jsx-runtime');
 
-        function norm(str) {
-          if (typeof str !== 'string') return '';
-          return str.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim().toLowerCase();
-        }
+          const killedSet = new WeakSet();
+          const keptSet = new WeakSet();
+          const countMap = new WeakMap();
 
-        const EXACT_KILL = new Set([
-          'dualsense',
-          'servidor intermediario',
-          'outros',
-          'sensor',
-          'streaming do console',
-          'controle virtual',
-          'fsr',
-          'formato do video',
-          'picture-in-picture',
-          'nano (experimental)',
-          'nano',
-          'webview'
-        ]);
-
-        const SUBSTR_KILL = [
-          'configurar gatilho esquerdo',
-          'escolha como o gatilho esquerdo',
-          'configurar gatilho direito',
-          'escolha como o gatilho direito',
-          'servidor intermediario integrado',
-          'usa um servidor integrado ao xstreaming',
-          'servidor intermediario personalizado',
-          'toque nativo (experimental)',
-          'ativar o toque nativo',
-          'ativar giroscopio',
-          'usar o giroscopio do dispositivo',
-          'como ativar o giroscopio',
-          'escolha se o giroscopio sera ativado',
-          'sensibilidade do eixo x do giroscopio',
-          'ajustar a sensibilidade do movimento horizontal',
-          'sensibilidade do eixo y do giroscopio',
-          'ajustar a sensibilidade do movimento vertical',
-          'inverter movimento do giroscopio',
-          'movimento do giroscopio pode ficar invertido',
-          'ligar ao iniciar o streaming',
-          'escolha se deseja ligar o console',
-          'servidor de conexao(xhome)',
-          'este servidor ajuda a estabelecer a conexao',
-          'sempre mostrar o controle virtual',
-          'transparencia dos botoes virtuais',
-          'configurar a transparencia do controle virtual',
-          'layout do analogico virtual',
-          'escolher se o analogico virtual ficara fixo',
-          'personalizar botoes virtuais',
-          'personalize o layout do seu controle virtual',
-          'manter botoes automaticamente',
-          'escolha quais botoes poderao ser mantidos',
-          'configuracoes do botao macro virtual',
-          'ativar o botao macro e editar sua sequencia',
-          'ative o fsr',
-          'fidelityfx super resolution',
-          'geracao inteligente de quadros',
-          'apos importar o lossless.dll',
-          'importar lossless.dll',
-          'prepare um arquivo de origem legal',
-          'selecione como o video sera exibido',
-          'colocar o streaming em segundo plano abrira o modo picture-in-picture',
-          'nano: usa um sistema proprio',
-          'webview: usa o sistema webview'
-        ];
-
-        const PROTECTED_SUBSTR = [
-          'definir resolucao',
-          'priorizar conexao ipv6',
-          'native: usa o sistema nativo',
-          'motor de processamento',
-          'teste os botoes',
-          'salvar',
-          'voltar',
-          'iniciar jogo',
-          'voltar ao jogo',
-          'pesquisar jogos'
-        ];
-
-        function checkText(raw) {
-          const s = norm(raw);
-          if (!s) return { kill: false, keep: false, count: 0 };
-          if (s === 'native' || s === 'configuracoes' || s === 'resolucao' || s === 'ipv6' || s === 'audio') {
-            return { kill: false, keep: true, count: 1 };
+          function norm(str) {
+            if (typeof str !== 'string') return '';
+            return str.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim().toLowerCase();
           }
-          for (let i = 0; i < PROTECTED_SUBSTR.length; i++) {
-            if (s.includes(PROTECTED_SUBSTR[i])) return { kill: false, keep: true, count: 1 };
-          }
-          if (EXACT_KILL.has(s)) return { kill: true, keep: false, count: 1 };
-          for (let i = 0; i < SUBSTR_KILL.length; i++) {
-            if (s.includes(SUBSTR_KILL[i])) return { kill: true, keep: false, count: 1 };
-          }
-          return { kill: false, keep: false, count: s.length > 1 ? 1 : 0 };
-        }
 
-        function scanNode(node, state) {
-          if (node == null || typeof node === 'boolean' || typeof node === 'number') return;
-          if (typeof node === 'string') {
-            const r = checkText(node);
-            if (r.kill) state.kill = true;
-            if (r.keep) state.keep = true;
-            state.count += r.count;
-            return;
-          }
-          if (Array.isArray(node)) {
-            for (let i = 0; i < node.length; i++) scanNode(node[i], state);
-            return;
-          }
-          if (typeof node === 'object') {
-            if (node._killRow) state.kill = true;
-            if (node._keepRow) state.keep = true;
-            if (typeof node._strCount === 'number') {
-              state.count += node._strCount;
-            } else if (node.props) {
-              scanProps(node.props, state);
+          const EXACT_KILL = new Set([
+            'dualsense',
+            'servidor intermediario',
+            'outros',
+            'sensor',
+            'streaming do console',
+            'controle virtual',
+            'fsr',
+            'formato do video',
+            'picture-in-picture',
+            'nano (experimental)',
+            'webview'
+          ]);
+
+          const SUBSTR_KILL = [
+            'configurar gatilho esquerdo',
+            'escolha como o gatilho esquerdo',
+            'configurar gatilho direito',
+            'escolha como o gatilho direito',
+            'servidor intermediario integrado',
+            'usa um servidor integrado ao xstreaming',
+            'servidor intermediario personalizado',
+            'toque nativo (experimental)',
+            'ativar o toque nativo',
+            'ativar giroscopio',
+            'usar o giroscopio do dispositivo',
+            'como ativar o giroscopio',
+            'escolha se o giroscopio sera ativado',
+            'sensibilidade do eixo x do giroscopio',
+            'ajustar a sensibilidade do movimento horizontal',
+            'sensibilidade do eixo y do giroscopio',
+            'ajustar a sensibilidade do movimento vertical',
+            'inverter movimento do giroscopio',
+            'movimento do giroscopio pode ficar invertido',
+            'ligar ao iniciar o streaming',
+            'escolha se deseja ligar o console',
+            'servidor de conexao(xhome)',
+            'este servidor ajuda a estabelecer a conexao',
+            'sempre mostrar o controle virtual',
+            'transparencia dos botoes virtuais',
+            'configurar a transparencia do controle virtual',
+            'layout do analogico virtual',
+            'escolher se o analogico virtual ficara fixo',
+            'personalizar botoes virtuais',
+            'personalize o layout do seu controle virtual',
+            'manter botoes automaticamente',
+            'escolha quais botoes poderao ser mantidos',
+            'configuracoes do botao macro virtual',
+            'ativar o botao macro e editar sua sequencia',
+            'ative o fsr',
+            'fidelityfx super resolution',
+            'geracao inteligente de quadros',
+            'apos importar o lossless.dll',
+            'importar lossless.dll',
+            'prepare um arquivo de origem legal',
+            'selecione como o video sera exibido',
+            'colocar o streaming em segundo plano abrira o modo picture-in-picture'
+          ];
+
+          const PROTECTED_SUBSTR = [
+            'definir resolucao',
+            'priorizar conexao ipv6',
+            'native: usa o sistema nativo',
+            'motor de processamento',
+            'teste os botoes',
+            'salvar',
+            'voltar',
+            'iniciar jogo',
+            'voltar ao jogo',
+            'pesquisar jogos'
+          ];
+
+          function checkText(raw) {
+            const s = norm(raw);
+            if (!s) return { kill: false, keep: false, count: 0 };
+            if (s === 'native' || s === 'configuracoes' || s === 'resolucao' || s === 'ipv6' || s === 'audio') {
+              return { kill: false, keep: true, count: 1 };
             }
+            for (let i = 0; i < PROTECTED_SUBSTR.length; i++) {
+              if (s.includes(PROTECTED_SUBSTR[i])) return { kill: false, keep: true, count: 1 };
+            }
+            if (EXACT_KILL.has(s)) return { kill: true, keep: false, count: 1 };
+            for (let i = 0; i < SUBSTR_KILL.length; i++) {
+              if (s.includes(SUBSTR_KILL[i])) return { kill: true, keep: false, count: 1 };
+            }
+            return { kill: false, keep: false, count: s.length > 1 ? 1 : 0 };
           }
-        }
 
-        function scanProps(props, state) {
-          if (!props) return;
-          const keys = ['title', 'label', 'name', 'description', 'subTitle', 'subtitle', 'header', 'text'];
-          for (let i = 0; i < keys.length; i++) {
-            if (typeof props[keys[i]] === 'string') {
-              const r = checkText(props[keys[i]]);
+          function scanNode(node, state) {
+            if (node == null || typeof node === 'boolean' || typeof node === 'number') return;
+            if (typeof node === 'string') {
+              const r = checkText(node);
               if (r.kill) state.kill = true;
               if (r.keep) state.keep = true;
               state.count += r.count;
+              return;
+            }
+            if (Array.isArray(node)) {
+              for (let i = 0; i < node.length; i++) scanNode(node[i], state);
+              return;
+            }
+            if (typeof node === 'object') {
+              if (killedSet.has(node)) state.kill = true;
+              if (keptSet.has(node)) state.keep = true;
+              if (countMap.has(node)) {
+                state.count += countMap.get(node);
+              } else if (node.props) {
+                scanProps(node.props, state);
+              }
             }
           }
-          if (props.children !== undefined) {
-            scanNode(props.children, state);
-          }
-        }
 
-        function removeKilledFromChildren(children) {
-          if (Array.isArray(children)) {
-            const out = [];
-            for (let i = 0; i < children.length; i++) {
-              const ch = children[i];
-              if (ch && typeof ch === 'object' && ch._killRow && !ch._keepRow) continue;
-              if (Array.isArray(ch)) out.push(removeKilledFromChildren(ch));
-              else out.push(ch);
+          function scanProps(props, state) {
+            if (!props) return;
+            const keys = ['title', 'label', 'name', 'description', 'subTitle', 'subtitle', 'header', 'text'];
+            for (let i = 0; i < keys.length; i++) {
+              if (typeof props[keys[i]] === 'string') {
+                const r = checkText(props[keys[i]]);
+                if (r.kill) state.kill = true;
+                if (r.keep) state.keep = true;
+                state.count += r.count;
+              }
             }
-            return out;
+            if (props.children !== undefined) {
+              scanNode(props.children, state);
+            }
           }
-          if (children && typeof children === 'object' && children._killRow && !children._keepRow) {
-            return null;
-          }
-          return children;
-        }
 
-        const wrappedFns = new WeakMap();
-        function wrapComponent(fn) {
-          if (typeof fn !== 'function' || (fn.prototype && fn.prototype.isReactComponent)) return fn;
-          if (wrappedFns.has(fn)) return wrappedFns.get(fn);
-          const wrapped = function(props, ref) {
-            const res = fn(props, ref);
-            if (res && typeof res === 'object' && res._killRow && !res._keepRow) return null;
-            return res;
+          const HIDE_STYLE = {
+            display: 'none',
+            height: 0,
+            width: 0,
+            margin: 0,
+            marginTop: 0,
+            marginBottom: 0,
+            padding: 0,
+            paddingTop: 0,
+            paddingBottom: 0,
+            borderWidth: 0,
+            borderBottomWidth: 0,
+            opacity: 0,
+            overflow: 'hidden'
           };
-          try { Object.assign(wrapped, fn); } catch (e) {}
-          wrappedFns.set(fn, wrapped);
-          return wrapped;
-        }
 
-        function processElement(el) {
-          if (!el || typeof el !== 'object' || !el.props) return el;
-          const state = { kill: false, keep: false, count: 0 };
-          scanProps(el.props, state);
-
-          try {
-            Object.defineProperty(el, '_strCount', { value: state.count, configurable: true });
-            Object.defineProperty(el, '_keepRow', { value: state.keep, configurable: true });
-          } catch (e) {}
-
-          if (state.kill && !state.keep && state.count <= 6) {
-            try {
-              Object.defineProperty(el, '_killRow', { value: true, configurable: true });
-              const hideStyle = { display: 'none', height: 0, width: 0, margin: 0, marginTop: 0, marginBottom: 0, padding: 0, paddingTop: 0, paddingBottom: 0, borderWidth: 0, borderBottomWidth: 0, opacity: 0, overflow: 'hidden' };
-              const nextProps = Object.assign({}, el.props, {
-                style: el.props.style ? [el.props.style, hideStyle] : hideStyle
+          function evaluateAndStyle(type, props, childrenArgs) {
+            if (!props || type === React.Fragment) return { props, markKill: false, markKeep: false, count: 0 };
+            if (props.navigation || props.route || props.component || props.initialRouteName || props.screens) {
+              return { props, markKill: false, markKeep: true, count: 10 };
+            }
+            const state = { kill: false, keep: false, count: 0 };
+            scanProps(props, state);
+            if (childrenArgs && childrenArgs.length > 0) {
+              scanNode(childrenArgs, state);
+            }
+            if (state.kill && !state.keep && state.count <= 4) {
+              const nextProps = Object.assign({}, props, {
+                style: props.style ? [props.style, HIDE_STYLE] : HIDE_STYLE,
+                focusable: false,
+                accessible: false,
+                pointerEvents: 'none'
               });
-              Object.defineProperty(el, 'props', { value: nextProps, configurable: true });
-            } catch (e) {}
+              return { props: nextProps, markKill: true, markKeep: false, count: state.count };
+            }
+            return { props, markKill: false, markKeep: state.keep, count: state.count };
+          }
+
+          function tagElement(el, info) {
+            if (el && typeof el === 'object') {
+              try {
+                countMap.set(el, info.count);
+                if (info.markKill) killedSet.add(el);
+                if (info.markKeep) keptSet.add(el);
+              } catch (e) {}
+            }
             return el;
           }
 
-          if (state.kill && el.props.children !== undefined) {
+          const origCreateElement = React.createElement;
+          React.createElement = function(type, props, ...children) {
             try {
-              const cleaned = removeKilledFromChildren(el.props.children);
-              const nextProps = Object.assign({}, el.props, { children: cleaned });
-              Object.defineProperty(el, 'props', { value: nextProps, configurable: true });
-            } catch (e) {}
-          }
-          return el;
-        }
+              const info = evaluateAndStyle(type, props, children);
+              const el = origCreateElement.apply(this, [type, info.props, ...children]);
+              return tagElement(el, info);
+            } catch (e) {
+              return origCreateElement.apply(this, arguments);
+            }
+          };
 
-        const origCreateElement = React.createElement;
-        React.createElement = function(type, props, ...children) {
-          const wType = wrapComponent(type);
-          const el = origCreateElement.apply(this, [wType, props, ...children]);
-          return processElement(el);
-        };
-
-        if (jsxRuntime) {
-          if (jsxRuntime.jsx) {
-            const origJsx = jsxRuntime.jsx;
-            jsxRuntime.jsx = function(type, props, key) {
-              return processElement(origJsx(wrapComponent(type), props, key));
-            };
+          if (jsxRuntime) {
+            if (jsxRuntime.jsx) {
+              const origJsx = jsxRuntime.jsx;
+              jsxRuntime.jsx = function(type, props, key) {
+                try {
+                  const info = evaluateAndStyle(type, props, null);
+                  return tagElement(origJsx(type, info.props, key), info);
+                } catch (e) {
+                  return origJsx(type, props, key);
+                }
+              };
+            }
+            if (jsxRuntime.jsxs) {
+              const origJsxs = jsxRuntime.jsxs;
+              jsxRuntime.jsxs = function(type, props, key) {
+                try {
+                  const info = evaluateAndStyle(type, props, null);
+                  return tagElement(origJsxs(type, info.props, key), info);
+                } catch (e) {
+                  return origJsxs(type, props, key);
+                }
+              };
+            }
           }
-          if (jsxRuntime.jsxs) {
-            const origJsxs = jsxRuntime.jsxs;
-            jsxRuntime.jsxs = function(type, props, key) {
-              return processElement(origJsxs(wrapComponent(type), props, key));
-            };
-          }
-        }
+        } catch (e) {}
         `;
         fs.writeFileSync(filterFile, filterCode.trim() + '\n', 'utf8');
 
@@ -469,56 +475,7 @@ jobs:
         cd android
         chmod +x gradlew
         ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
-
-    - name: Cortar Peso do APK (Remover x86/x86_64 e Gerar Versoes Ultra-Leves)
-      run: |
-        set +e
-        BT_DIR=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-        BT="$ANDROID_HOME/build-tools/$BT_DIR"
-        KS="/tmp/ultralite.keystore"
-        rm -f "$KS"
-        keytool -genkeypair -v -keystore "$KS" -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
-
-        ORIG_APK="android/app/build/outputs/apk/prod/release/app-prod-release.apk"
-        OUT_DIR="android/app/build/outputs/apk/prod/release"
-
-        if [ -f "$ORIG_APK" ]; then
-          cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk"
-          cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-64bit-arm64-v8a.apk"
-
-          python3 - << 'PYEOF'
-        import zipfile, os
-
-        targets = [
-            ("android/app/build/outputs/apk/prod/release/app-prod-release.apk", ["lib/x86/", "lib/x86_64/"]),
-            ("android/app/build/outputs/apk/prod/release/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk", ["lib/x86/", "lib/x86_64/", "lib/arm64-v8a/"]),
-            ("android/app/build/outputs/apk/prod/release/XStreaming-UltraLeve-64bit-arm64-v8a.apk", ["lib/x86/", "lib/x86_64/", "lib/armeabi-v7a/"])
-        ]
-
-        for apk_path, drop_prefixes in targets:
-            if not os.path.exists(apk_path):
-                continue
-            tmp_path = apk_path + ".tmp"
-            with zipfile.ZipFile(apk_path, 'r') as zin:
-                with zipfile.ZipFile(tmp_path, 'w') as zout:
-                    for item in zin.infolist():
-                        fn = item.filename
-                        if any(fn.startswith(p) for p in drop_prefixes):
-                            continue
-                        if fn.startswith("META-INF/") and (fn.endswith(".SF") or fn.endswith(".RSA") or fn.endswith(".DSA") or fn.endswith("MANIFEST.MF")):
-                            continue
-                        zout.writestr(item, zin.read(fn))
-            os.replace(tmp_path, apk_path)
-        PYEOF
-
-          for apk in "$OUT_DIR"/*.apk; do
-            "$BT/zipalign" -f -p 4 "$apk" "${apk}.aligned" && mv "${apk}.aligned" "$apk"
-            "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$apk"
-            rm -f "${apk}.idsig"
-            echo "APK Pronto: $(basename "$apk") -> $(du -h "$apk" | cut -f1)"
-          done
-        fi
-        exit 0
+        ls -lh app/build/outputs/apk/prod/release/
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
