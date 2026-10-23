@@ -40,7 +40,8 @@ jobs:
       run: |
         set +e
         set +o pipefail
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;23.1.7779620" "cmake;3.22.1"
         exit 0
 
     - name: Install Dependencies
@@ -101,4 +102,420 @@ jobs:
           walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
             if (!p.endsWith('.java')) return;
             let c = fs.readFileSync(p, 'utf8');
-            c = c.replace(/(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)/g, '$1 $
+            c = c.replace(/(public\s+void\s+set(?:Fsr|FrameGen)?Enabled\s*\(\s*boolean\s+(\w+)\s*\)\s*\{)/g, '$1 $2 = false;');
+            c = c.replace(/(public\s+void\s+onSensorChanged\s*\([^)]*\)\s*\{)/g, '$1 if (true) return;');
+            fs.writeFileSync(p, c, 'utf8');
+          });
+        });
+
+        // 4. Proteger chamadas JNI (System.loadLibrary) para rodar sem os .so deletados e otimizar MediaCodec
+        walk('android/app/src/main/java', (p) => {
+          if (!p.endsWith('.java')) return;
+          let c = fs.readFileSync(p, 'utf8');
+          const orig = c;
+          c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
+          c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
+          c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
+          c = c.replace(/System\.loadLibrary\s*\(\s*("[^"]+")\s*\)\s*;/g, 'try { System.loadLibrary($1); } catch (Throwable ignored) {}');
+          if (c !== orig) fs.writeFileSync(p, c, 'utf8');
+        });
+
+        // 5. Garantir CMake 3.22.1 e remover arquiteturas x86 / x86_64 no build.gradle
+        const bgPath = 'android/app/build.gradle';
+        if (fs.existsSync(bgPath)) {
+          let bg = fs.readFileSync(bgPath, 'utf8');
+          bg = bg.replace(/version\s+["']3\.\d+\.\d+["']/g, 'version "3.22.1"');
+          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
+          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
+          fs.writeFileSync(bgPath, bg, 'utf8');
+        }
+
+        // 6. Filtro React Native (com normalizacao de acentos) para apagar todas as opcoes circuladas nas 6 fotos
+        const filterFile = 'src/tv_lite_filter.js';
+        const filterCode = `
+        const React = require('react');
+        const jsxRuntime = require('react/jsx-runtime');
+
+        function norm(str) {
+          if (typeof str !== 'string') return '';
+          return str.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim().toLowerCase();
+        }
+
+        const EXACT_KILL = new Set([
+          'dualsense',
+          'servidor intermediario',
+          'outros',
+          'sensor',
+          'streaming do console',
+          'controle virtual',
+          'fsr',
+          'formato do video',
+          'picture-in-picture',
+          'nano (experimental)',
+          'nano',
+          'webview'
+        ]);
+
+        const SUBSTR_KILL = [
+          'configurar gatilho esquerdo',
+          'escolha como o gatilho esquerdo',
+          'configurar gatilho direito',
+          'escolha como o gatilho direito',
+          'servidor intermediario integrado',
+          'usa um servidor integrado ao xstreaming',
+          'servidor intermediario personalizado',
+          'toque nativo (experimental)',
+          'ativar o toque nativo',
+          'ativar giroscopio',
+          'usar o giroscopio do dispositivo',
+          'como ativar o giroscopio',
+          'escolha se o giroscopio sera ativado',
+          'sensibilidade do eixo x do giroscopio',
+          'ajustar a sensibilidade do movimento horizontal',
+          'sensibilidade do eixo y do giroscopio',
+          'ajustar a sensibilidade do movimento vertical',
+          'inverter movimento do giroscopio',
+          'movimento do giroscopio pode ficar invertido',
+          'ligar ao iniciar o streaming',
+          'escolha se deseja ligar o console',
+          'servidor de conexao(xhome)',
+          'este servidor ajuda a estabelecer a conexao',
+          'sempre mostrar o controle virtual',
+          'transparencia dos botoes virtuais',
+          'configurar a transparencia do controle virtual',
+          'layout do analogico virtual',
+          'escolher se o analogico virtual ficara fixo',
+          'personalizar botoes virtuais',
+          'personalize o layout do seu controle virtual',
+          'manter botoes automaticamente',
+          'escolha quais botoes poderao ser mantidos',
+          'configuracoes do botao macro virtual',
+          'ativar o botao macro e editar sua sequencia',
+          'ative o fsr',
+          'fidelityfx super resolution',
+          'geracao inteligente de quadros',
+          'apos importar o lossless.dll',
+          'importar lossless.dll',
+          'prepare um arquivo de origem legal',
+          'selecione como o video sera exibido',
+          'colocar o streaming em segundo plano abrira o modo picture-in-picture',
+          'nano: usa um sistema proprio',
+          'webview: usa o sistema webview'
+        ];
+
+        const PROTECTED_SUBSTR = [
+          'definir resolucao',
+          'priorizar conexao ipv6',
+          'native: usa o sistema nativo',
+          'motor de processamento',
+          'teste os botoes',
+          'salvar',
+          'voltar',
+          'iniciar jogo',
+          'voltar ao jogo',
+          'pesquisar jogos'
+        ];
+
+        function checkText(raw) {
+          const s = norm(raw);
+          if (!s) return { kill: false, keep: false, count: 0 };
+          if (s === 'native' || s === 'configuracoes' || s === 'resolucao' || s === 'ipv6' || s === 'audio') {
+            return { kill: false, keep: true, count: 1 };
+          }
+          for (let i = 0; i < PROTECTED_SUBSTR.length; i++) {
+            if (s.includes(PROTECTED_SUBSTR[i])) return { kill: false, keep: true, count: 1 };
+          }
+          if (EXACT_KILL.has(s)) return { kill: true, keep: false, count: 1 };
+          for (let i = 0; i < SUBSTR_KILL.length; i++) {
+            if (s.includes(SUBSTR_KILL[i])) return { kill: true, keep: false, count: 1 };
+          }
+          return { kill: false, keep: false, count: s.length > 1 ? 1 : 0 };
+        }
+
+        function scanNode(node, state) {
+          if (node == null || typeof node === 'boolean' || typeof node === 'number') return;
+          if (typeof node === 'string') {
+            const r = checkText(node);
+            if (r.kill) state.kill = true;
+            if (r.keep) state.keep = true;
+            state.count += r.count;
+            return;
+          }
+          if (Array.isArray(node)) {
+            for (let i = 0; i < node.length; i++) scanNode(node[i], state);
+            return;
+          }
+          if (typeof node === 'object') {
+            if (node._killRow) state.kill = true;
+            if (node._keepRow) state.keep = true;
+            if (typeof node._strCount === 'number') {
+              state.count += node._strCount;
+            } else if (node.props) {
+              scanProps(node.props, state);
+            }
+          }
+        }
+
+        function scanProps(props, state) {
+          if (!props) return;
+          const keys = ['title', 'label', 'name', 'description', 'subTitle', 'subtitle', 'header', 'text'];
+          for (let i = 0; i < keys.length; i++) {
+            if (typeof props[keys[i]] === 'string') {
+              const r = checkText(props[keys[i]]);
+              if (r.kill) state.kill = true;
+              if (r.keep) state.keep = true;
+              state.count += r.count;
+            }
+          }
+          if (props.children !== undefined) {
+            scanNode(props.children, state);
+          }
+        }
+
+        function removeKilledFromChildren(children) {
+          if (Array.isArray(children)) {
+            const out = [];
+            for (let i = 0; i < children.length; i++) {
+              const ch = children[i];
+              if (ch && typeof ch === 'object' && ch._killRow && !ch._keepRow) continue;
+              if (Array.isArray(ch)) out.push(removeKilledFromChildren(ch));
+              else out.push(ch);
+            }
+            return out;
+          }
+          if (children && typeof children === 'object' && children._killRow && !children._keepRow) {
+            return null;
+          }
+          return children;
+        }
+
+        const wrappedFns = new WeakMap();
+        function wrapComponent(fn) {
+          if (typeof fn !== 'function' || (fn.prototype && fn.prototype.isReactComponent)) return fn;
+          if (wrappedFns.has(fn)) return wrappedFns.get(fn);
+          const wrapped = function(props, ref) {
+            const res = fn(props, ref);
+            if (res && typeof res === 'object' && res._killRow && !res._keepRow) return null;
+            return res;
+          };
+          try { Object.assign(wrapped, fn); } catch (e) {}
+          wrappedFns.set(fn, wrapped);
+          return wrapped;
+        }
+
+        function processElement(el) {
+          if (!el || typeof el !== 'object' || !el.props) return el;
+          const state = { kill: false, keep: false, count: 0 };
+          scanProps(el.props, state);
+
+          try {
+            Object.defineProperty(el, '_strCount', { value: state.count, configurable: true });
+            Object.defineProperty(el, '_keepRow', { value: state.keep, configurable: true });
+          } catch (e) {}
+
+          if (state.kill && !state.keep && state.count <= 6) {
+            try {
+              Object.defineProperty(el, '_killRow', { value: true, configurable: true });
+              const hideStyle = { display: 'none', height: 0, width: 0, margin: 0, marginTop: 0, marginBottom: 0, padding: 0, paddingTop: 0, paddingBottom: 0, borderWidth: 0, borderBottomWidth: 0, opacity: 0, overflow: 'hidden' };
+              const nextProps = Object.assign({}, el.props, {
+                style: el.props.style ? [el.props.style, hideStyle] : hideStyle
+              });
+              Object.defineProperty(el, 'props', { value: nextProps, configurable: true });
+            } catch (e) {}
+            return el;
+          }
+
+          if (state.kill && el.props.children !== undefined) {
+            try {
+              const cleaned = removeKilledFromChildren(el.props.children);
+              const nextProps = Object.assign({}, el.props, { children: cleaned });
+              Object.defineProperty(el, 'props', { value: nextProps, configurable: true });
+            } catch (e) {}
+          }
+          return el;
+        }
+
+        const origCreateElement = React.createElement;
+        React.createElement = function(type, props, ...children) {
+          const wType = wrapComponent(type);
+          const el = origCreateElement.apply(this, [wType, props, ...children]);
+          return processElement(el);
+        };
+
+        if (jsxRuntime) {
+          if (jsxRuntime.jsx) {
+            const origJsx = jsxRuntime.jsx;
+            jsxRuntime.jsx = function(type, props, key) {
+              return processElement(origJsx(wrapComponent(type), props, key));
+            };
+          }
+          if (jsxRuntime.jsxs) {
+            const origJsxs = jsxRuntime.jsxs;
+            jsxRuntime.jsxs = function(type, props, key) {
+              return processElement(origJsxs(wrapComponent(type), props, key));
+            };
+          }
+        }
+        `;
+        fs.writeFileSync(filterFile, filterCode.trim() + '\n', 'utf8');
+
+        if (fs.existsSync('index.js')) {
+          let idxCode = fs.readFileSync('index.js', 'utf8');
+          if (!idxCode.includes('tv_lite_filter')) {
+            idxCode = `import './src/tv_lite_filter';\n` + idxCode;
+            fs.writeFileSync('index.js', idxCode, 'utf8');
+          }
+        }
+
+        // 7. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
+        const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4','#00d4ff','#38bdf8'];
+        const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e','#0f172a','#1e293b','#172554','#1e3a8a','#0d1b2a','#1b263b','#122342','#0c192c','#132238'];
+        walk('src', (p) => {
+          if (!/\.(ts|tsx|js|jsx|json)$/.test(p) || p.endsWith('tv_lite_filter.js')) return;
+          let c = fs.readFileSync(p, 'utf8');
+          const orig = c;
+          blueAccents.forEach((h) => { c = c.split(h).join('#107C10'); });
+          darkBgs.forEach((h) => { c = c.split(h).join('#0e0e0e'); });
+          c = c.split('"Jump back in"').join('"Voltar ao jogo"').split("'Jump back in'").join("'Voltar ao jogo'");
+          c = c.split('"Recently Added"').join('"Adicionados recentemente"').split("'Recently Added'").join("'Adicionados recentemente'");
+          c = c.split('"Show all"').join('"Mostrar tudo"').split("'Show all'").join("'Mostrar tudo'");
+          c = c.split('"Find games"').join('"Pesquisar jogos"').split("'Find games'").join("'Pesquisar jogos'");
+          if (c !== orig) fs.writeFileSync(p, c, 'utf8');
+        });
+
+        // 8. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
+        const manPath = 'android/app/src/main/AndroidManifest.xml';
+        if (fs.existsSync(manPath)) {
+          let man = fs.readFileSync(manPath, 'utf8');
+          if (!man.includes('LEANBACK_LAUNCHER')) {
+            man = man.replace(
+              '<category android:name="android.intent.category.LAUNCHER" />',
+              '<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />'
+            );
+            fs.writeFileSync(manPath, man, 'utf8');
+          }
+        }
+
+        const mainAct = 'android/app/src/main/java/com/xstreaming/MainActivity.java';
+        if (fs.existsSync(mainAct)) {
+          let code = fs.readFileSync(mainAct, 'utf8');
+          if (!code.includes('_lastMotionTime') && !code.includes('dispatchGenericMotionEvent')) {
+            const filterMethod = `
+            private float _lastLX = 0f, _lastLY = 0f, _lastRX = 0f, _lastRY = 0f, _lastLT = 0f, _lastRT = 0f, _lastHatX = 0f, _lastHatY = 0f;
+            private long _lastMotionTime = 0L;
+            private boolean _wasCentered = true;
+            @Override
+            public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+                if (event != null && (event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {
+                    float lx = event.getAxisValue(android.view.MotionEvent.AXIS_X);
+                    float ly = event.getAxisValue(android.view.MotionEvent.AXIS_Y);
+                    float rx = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
+                    float ry = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
+                    float lt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_BRAKE));
+                    float rt = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_GAS));
+                    float hatX = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X);
+                    float hatY = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y);
+                    boolean isCentered = Math.abs(lx) < 0.08f && Math.abs(ly) < 0.08f && Math.abs(rx) < 0.08f && Math.abs(ry) < 0.08f && lt < 0.05f && rt < 0.05f;
+                    boolean hatChanged = Float.compare(hatX, _lastHatX) != 0 || Float.compare(hatY, _lastHatY) != 0;
+                    long now = android.os.SystemClock.uptimeMillis();
+                    if (!hatChanged) {
+                        if (isCentered) {
+                            if (_wasCentered) return true;
+                            _wasCentered = true;
+                        } else {
+                            _wasCentered = false;
+                            if (now - _lastMotionTime < 14L) return true;
+                            if (Math.abs(lx - _lastLX) < 0.015f && Math.abs(ly - _lastLY) < 0.015f && Math.abs(rx - _lastRX) < 0.015f && Math.abs(ry - _lastRY) < 0.015f && Math.abs(lt - _lastLT) < 0.02f && Math.abs(rt - _lastRT) < 0.02f) return true;
+                        }
+                    }
+                    _lastHatX = hatX; _lastHatY = hatY;
+                    _lastLX = lx; _lastLY = ly; _lastRX = rx; _lastRY = ry; _lastLT = lt; _lastRT = rt;
+                    _lastMotionTime = now;
+                }
+                return super.dispatchGenericMotionEvent(event);
+            }
+        }`;
+            const lastBrace = code.lastIndexOf('}');
+            if (lastBrace !== -1) {
+              code = code.slice(0, lastBrace) + filterMethod + '\n';
+              fs.writeFileSync(mainAct, code, 'utf8');
+            }
+          }
+        }
+        EOF
+
+    - name: Configure Signing and Disable Nano Rust Build
+      run: |
+        cat << 'EOF' > /tmp/init.gradle
+        allprojects {
+            tasks.configureEach { task ->
+                if (task.name.contains("NanoRust") || task.name.contains("DevRelease") || task.name.contains("DevDebug")) {
+                    task.enabled = false
+                }
+            }
+            afterEvaluate { project ->
+                if (project.hasProperty('android')) {
+                    project.android {
+                        buildTypes {
+                            release {
+                                signingConfig signingConfigs.debug
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        EOF
+
+    - name: Build Release APK
+      run: |
+        cd android
+        chmod +x gradlew
+        ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
+
+    - name: Deletar Binarios Inuteis (x86, Lossless C++, Nano, WebView) Direto do APK
+      run: |
+        python3 - << 'EOF'
+        import zipfile, os, glob
+
+        for apk in glob.glob("android/app/build/outputs/apk/prod/release/*.apk"):
+            before_mb = os.path.getsize(apk) / (1024 * 1024)
+            print(f"APK original: {apk} ({before_mb:.2f} MB)")
+            tmp_apk = apk + ".slim"
+            with zipfile.ZipFile(apk, 'r') as zin:
+                with zipfile.ZipFile(tmp_apk, 'w') as zout:
+                    for item in zin.infolist():
+                        fn = item.filename
+                        low = fn.lower()
+                        if fn.startswith("lib/x86/") or fn.startswith("lib/x86_64/"):
+                            continue
+                        if fn.startswith("META-INF/") and (fn.endswith(".SF") or fn.endswith(".RSA") or fn.endswith(".DSA") or fn.endswith("MANIFEST.MF")):
+                            continue
+                        if any(k in low for k in ["liblsfg", "libframegen", "libnano"]):
+                            continue
+                        data = zin.read(fn)
+                        zout.writestr(item, data)
+            os.replace(tmp_apk, apk)
+            after_mb = os.path.getsize(apk) / (1024 * 1024)
+            print(f"APK reduzido: {apk} ({after_mb:.2f} MB)")
+        EOF
+
+        BT_DIR=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
+        BT="$ANDROID_HOME/build-tools/$BT_DIR"
+        KS="/tmp/ultralite.keystore"
+        keytool -genkeypair -v -keystore "$KS" -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+
+        for apk in android/app/build/outputs/apk/prod/release/*.apk; do
+          [ -f "$apk" ] || continue
+          "$BT/zipalign" -f -p 4 "$apk" "${apk}.aligned"
+          mv "${apk}.aligned" "$apk"
+          "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$apk"
+          rm -f "${apk}.idsig"
+          echo "Tamanho final assinado: $(du -h "$apk" | cut -f1)"
+        done
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: XStreaming-TV-UltraLite-APK
+        path: android/app/build/outputs/apk/**/*.apk
