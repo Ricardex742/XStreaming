@@ -55,7 +55,7 @@ jobs:
           done
         fi
 
-    - name: Deletar Motores Pesados (C++, WebView, Nano, x86) e Remover Opcoes Circuladas
+    - name: Apagar Modulos Inuteis, Remover Opcoes Circuladas e Aplicar Tema Xbox
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -70,36 +70,14 @@ jobs:
           }
         }
 
-        // 1. DELETAR FISICAMENTE a pasta C++ do Lossless Scaling / FrameGen (lsfg_vendor) e pastas Rust/Nano
-        ['android/app/src/main/cpp', 'rust', 'android/app/src/main/jniLibs'].forEach((dir) => {
-          if (fs.existsSync(dir)) {
-            fs.rmSync(dir, { recursive: true, force: true });
+        // 1. Esvaziar os arquivos do motor WebView em assets/stream/assets
+        walk('android/app/src/main/assets/stream/assets', (p) => {
+          if (p.endsWith('.js') || p.endsWith('.wasm') || p.endsWith('.map')) {
+            fs.writeFileSync(p, '', 'utf8');
           }
         });
 
-        // 2. DELETAR FISICAMENTE todas as pastas x86 e x86_64
-        function removeCpuDirs(dir) {
-          if (!fs.existsSync(dir)) return;
-          for (const f of fs.readdirSync(dir)) {
-            const p = path.join(dir, f);
-            if (fs.statSync(p).isDirectory()) {
-              if (f === 'x86' || f === 'x86_64') {
-                fs.rmSync(p, { recursive: true, force: true });
-              } else {
-                removeCpuDirs(p);
-              }
-            }
-          }
-        }
-        removeCpuDirs('android');
-        removeCpuDirs('node_modules');
-
-        // 3. DELETAR FISICAMENTE os arquivos do motor WebView em assets/stream/assets
-        if (fs.existsSync('android/app/src/main/assets/stream/assets')) {
-          fs.rmSync('android/app/src/main/assets/stream/assets', { recursive: true, force: true });
-        }
-
-        // 4. Substituir imagens pesadas de Splash e fundo por pixel escuro de 68 bytes
+        // 2. Substituir imagens pesadas de Splash e fundo por pixel escuro de 68 bytes
         const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
         ['android/app/src/main/res', 'src'].forEach((folder) => {
           walk(folder, (p) => {
@@ -110,22 +88,7 @@ jobs:
           });
         });
 
-        // 5. Desativar compilacao CMake (externalNativeBuild) e ativar divisao de APK por Arquitetura no build.gradle
-        const bgPath = 'android/app/build.gradle';
-        if (fs.existsSync(bgPath)) {
-          let bg = fs.readFileSync(bgPath, 'utf8');
-          // Remover blocos externalNativeBuild que compilavam o C++ do Lossless.dll
-          bg = bg.replace(/externalNativeBuild\s*\{[\s\S]*?\}\s*\}/g, '');
-          bg = bg.replace(/externalNativeBuild\s*\{[^}]*\}/g, '');
-          // Ativar geração de APKs separados por arquitetura (reduz de 62MB para ~24MB)
-          bg = bg.replace(/def enableSeparateBuildPerCPUArchitecture = false/g, 'def enableSeparateBuildPerCPUArchitecture = true');
-          bg = bg.replace(/universalApk true/g, 'universalApk false');
-          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
-          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
-          fs.writeFileSync(bgPath, bg, 'utf8');
-        }
-
-        // 6. Esvaziar classes Java de Controle Virtual, FSR, FrameGen (Lossless), Giroscopio, DualSense e PiP
+        // 3. Esvaziar classes Java de Controle Virtual, FSR, FrameGen (Lossless), Giroscopio, DualSense e PiP
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -144,7 +107,7 @@ jobs:
           });
         });
 
-        // 7. Proteger chamadas JNI (System.loadLibrary e metodos native) para rodar sem os .so deletados
+        // 4. Proteger chamadas JNI (System.loadLibrary) para rodar sem os .so deletados e reequilibrar MediaCodec
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -156,7 +119,16 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 8. Filtro React Native para destruir da tela todas as opcoes circuladas nas 6 fotos
+        // 5. Remover arquiteturas x86 / x86_64 do build.gradle sem quebrar chaves
+        const bgPath = 'android/app/build.gradle';
+        if (fs.existsSync(bgPath)) {
+          let bg = fs.readFileSync(bgPath, 'utf8');
+          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
+          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
+          fs.writeFileSync(bgPath, bg, 'utf8');
+        }
+
+        // 6. Filtro React Native para apagar da tela todas as opcoes circuladas nas 6 fotos
         const filterFile = 'src/tv_lite_filter.js';
         const filterCode = `
         const React = require('react');
@@ -394,7 +366,7 @@ jobs:
           }
         }
 
-        // 9. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
+        // 7. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
         const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4','#00d4ff','#38bdf8'];
         const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e','#0f172a','#1e293b','#172554','#1e3a8a','#0d1b2a','#1b263b','#122342','#0c192c','#132238'];
         walk('src', (p) => {
@@ -410,7 +382,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 10. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
+        // 8. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -471,12 +443,12 @@ jobs:
         }
         EOF
 
-    - name: Configure Signing, Strip x86 Libraries and Disable Nano/C++ Tasks
+    - name: Configure Signing and Disable Nano/CMake Tasks
       run: |
         cat << 'EOF' > /tmp/init.gradle
         allprojects {
             tasks.configureEach { task ->
-                if (task.name.contains("NanoRust") || task.name.contains("DevRelease") || task.name.contains("DevDebug") || task.name.contains("externalNativeBuild") || task.name.contains("configureCMake") || task.name.contains("buildCMake")) {
+                if (task.name.contains("NanoRust") || task.name.contains("DevRelease") || task.name.contains("DevDebug") || task.name.contains("externalNativeBuild") || task.name.contains("CMake")) {
                     task.enabled = false
                 }
             }
@@ -488,13 +460,6 @@ jobs:
                                 signingConfig signingConfigs.debug
                             }
                         }
-                        packagingOptions {
-                            exclude 'lib/x86/**'
-                            exclude 'lib/x86_64/**'
-                            exclude '**/liblsfg*.so'
-                            exclude '**/libframegen*.so'
-                            exclude '**/libnano*.so'
-                        }
                     }
                 }
             }
@@ -505,7 +470,32 @@ jobs:
       run: |
         cd android
         chmod +x gradlew
-        ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
+        ./gradlew assembleProdRelease -x lint -x test --init-script /tmp/init.gradle
+
+    - name: Remover Binarios Pesados (x86, Lossless C++, Nano, WebView) Direto do APK
+      run: |
+        BT_DIR=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
+        BT="$ANDROID_HOME/build-tools/$BT_DIR"
+        KS="/tmp/ultralite.keystore"
+        keytool -genkeypair -v -keystore "$KS" -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+
+        for apk in android/app/build/outputs/apk/prod/release/*.apk; do
+          [ -f "$apk" ] || continue
+          echo "Tamanho antes da limpeza: $(du -h "$apk" | cut -f1)"
+          zip -q -d "$apk" \
+            "lib/x86/*" \
+            "lib/x86_64/*" \
+            "lib/*/liblsfg*.so" \
+            "lib/*/libframegen*.so" \
+            "lib/*/libnano*.so" \
+            "assets/stream/assets/*legacy*.js" \
+            "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
+          "$BT/zipalign" -f -p 4 "$apk" "${apk}.aligned"
+          mv "${apk}.aligned" "$apk"
+          "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$apk"
+          rm -f "${apk}.idsig"
+          echo "Tamanho final Ultra-Lite: $(du -h "$apk" | cut -f1)"
+        done
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
