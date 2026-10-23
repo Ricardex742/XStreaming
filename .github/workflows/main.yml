@@ -13,7 +13,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Limpar base Android e React Native (Base Estavel Geocld)
+    - name: Limpar base Android e React Native
       run: |
         git remote add upstream https://github.com/Geocld/XStreaming.git || true
         git fetch upstream main
@@ -21,6 +21,7 @@ jobs:
         git clean -fd android/ src/
         echo "" >> android/gradle.properties
         echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
+        sed -i 's/reactNativeArchitectures=.*/reactNativeArchitectures=armeabi-v7a,arm64-v8a/g' android/gradle.properties
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -54,7 +55,7 @@ jobs:
           done
         fi
 
-    - name: Remover Opcoes Circuladas e Aplicar Tema Xbox
+    - name: Apagar Modulos Inuteis, Remover Opcoes Circuladas e Aplicar Tema Xbox
       run: |
         node << 'EOF'
         const fs = require('fs');
@@ -69,9 +70,9 @@ jobs:
           }
         }
 
-        // 1. Esvaziar pacotes legados do WebView e imagens pesadas de fundo
+        // 1. Esvaziar os pacotes do motor WebView em assets/stream/assets e PNGs pesados de fundo
         walk('android/app/src/main/assets/stream/assets', (p) => {
-          if (p.includes('legacy') && p.endsWith('.js')) {
+          if (p.endsWith('.js') || p.endsWith('.wasm') || p.endsWith('.map')) {
             fs.writeFileSync(p, '', 'utf8');
           }
         });
@@ -86,7 +87,7 @@ jobs:
           });
         });
 
-        // 2. Desativar classes Java de Controle Virtual, FSR, FrameGen e Giroscopio
+        // 2. Esvaziar classes Java de Controle Virtual, FSR, FrameGen, Giroscopio e PiP
         walk('android/app/src/main/java/com/xstreaming/touchcontrols', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -95,7 +96,7 @@ jobs:
           fs.writeFileSync(p, c, 'utf8');
         });
 
-        ['fsr', 'framegen', 'sensor', 'pip'].forEach((sub) => {
+        ['fsr', 'framegen', 'sensor', 'pip', 'dualsense', 'proxy'].forEach((sub) => {
           walk(path.join('android/app/src/main/java/com/xstreaming', sub), (p) => {
             if (!p.endsWith('.java')) return;
             let c = fs.readFileSync(p, 'utf8');
@@ -105,7 +106,7 @@ jobs:
           });
         });
 
-        // 3. Reequilibrar MediaCodec
+        // 3. Proteger System.loadLibrary contra ausencia do NanoRust e reequilibrar MediaCodec
         walk('android/app/src/main/java', (p) => {
           if (!p.endsWith('.java')) return;
           let c = fs.readFileSync(p, 'utf8');
@@ -113,10 +114,20 @@ jobs:
           c = c.replace(/MediaFormat\.KEY_PRIORITY,\s*0/g, 'MediaFormat.KEY_PRIORITY, 1');
           c = c.replace(/KEY_OPERATING_RATE,\s*Short\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
           c = c.replace(/KEY_OPERATING_RATE,\s*Integer\.MAX_VALUE/g, 'KEY_OPERATING_RATE, 60');
+          c = c.replace(/System\.loadLibrary\s*\(\s*("[^"]+")\s*\)\s*;/g, 'try { System.loadLibrary($1); } catch (Throwable ignored) {}');
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 4. Filtro React Native para remover da tela todas as opcoes circuladas nas 6 fotos
+        // 4. Remover arquiteturas x86 / x86_64 do build.gradle
+        const bgPath = 'android/app/build.gradle';
+        if (fs.existsSync(bgPath)) {
+          let bg = fs.readFileSync(bgPath, 'utf8');
+          bg = bg.replace(/"x86",\s*"x86_64",\s*/g, '').replace(/'x86',\s*'x86_64',\s*/g, '');
+          bg = bg.replace(/,\s*"x86",\s*"x86_64"/g, '').replace(/,\s*'x86',\s*'x86_64'/g, '');
+          fs.writeFileSync(bgPath, bg, 'utf8');
+        }
+
+        // 5. Filtro React Native para apagar da tela todas as opcoes circuladas nas 6 fotos
         const filterFile = 'src/tv_lite_filter.js';
         const filterCode = `
         const React = require('react');
@@ -353,7 +364,7 @@ jobs:
           }
         }
 
-        // 5. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
+        // 6. Aplicar Tema Oficial play.xbox.com (#0e0e0e e #107C10)
         const blueAccents = ['#2088ff','#2088FF','#1890ff','#1890FF','#007aff','#007AFF','#2196f3','#2196F3','#0088ff','#0088FF','#3880ff','#3880FF','#409eff','#409EFF','#0066cc','#0078d4','#0078D4','#6750a4','#6750A4','#00d4ff','#38bdf8'];
         const darkBgs = ['#1a1b2e','#1A1B2E','#161726','#161622','#1e1e2e','#1E1E2E','#181825','#191a2c','#121324','#151625','#1c1d30','#141526','#1b1c2e','#202235','#24273a','#1f2033','#11121e','#0f172a','#1e293b','#172554','#1e3a8a','#0d1b2a','#1b263b','#122342','#0c192c','#132238'];
         walk('src', (p) => {
@@ -369,7 +380,7 @@ jobs:
           if (c !== orig) fs.writeFileSync(p, c, 'utf8');
         });
 
-        // 6. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
+        // 7. Garantir suporte de Android TV (LEANBACK_LAUNCHER) e filtro de 1000Hz do controle GameSir
         const manPath = 'android/app/src/main/AndroidManifest.xml';
         if (fs.existsSync(manPath)) {
           let man = fs.readFileSync(manPath, 'utf8');
@@ -430,12 +441,12 @@ jobs:
         }
         EOF
 
-    - name: Configure Signing
+    - name: Configure Signing and Disable Nano Rust Build
       run: |
         cat << 'EOF' > /tmp/init.gradle
         allprojects {
             tasks.configureEach { task ->
-                if (task.name.contains("DevRelease") || task.name.contains("DevDebug")) {
+                if (task.name.contains("NanoRust") || task.name.contains("DevRelease") || task.name.contains("DevDebug")) {
                     task.enabled = false
                 }
             }
@@ -457,13 +468,15 @@ jobs:
       run: |
         cd android
         chmod +x gradlew
-        ./gradlew assembleProdRelease -x lint -x test --init-script /tmp/init.gradle
+        ./gradlew assembleProdRelease -x lint -x test -x syncNanoRustJniLibs --init-script /tmp/init.gradle
 
-    - name: Cortar Peso do APK (Remover Binarios x86/x86_64 e Gerar Versoes Ultra-Leves)
+    - name: Cortar Peso do APK (Remover x86/x86_64 e Gerar Versoes Ultra-Leves)
       run: |
+        set +e
         BT_DIR=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
         BT="$ANDROID_HOME/build-tools/$BT_DIR"
         KS="/tmp/ultralite.keystore"
+        rm -f "$KS"
         keytool -genkeypair -v -keystore "$KS" -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
 
         ORIG_APK="android/app/build/outputs/apk/prod/release/app-prod-release.apk"
@@ -473,23 +486,39 @@ jobs:
           cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk"
           cp "$ORIG_APK" "$OUT_DIR/XStreaming-UltraLeve-64bit-arm64-v8a.apk"
 
-          # 1. Limpar x86 e x86_64 do app-prod-release.apk (Mantem 32-bit e 64-bit ARM, cai de 62MB para ~30MB)
-          zip -q -d "$ORIG_APK" "lib/x86/*" "lib/x86_64/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
+          python3 - << 'PYEOF'
+        import zipfile, os
 
-          # 2. Gerar APK exclusivo para TV 32-bit (~17MB)
-          zip -q -d "$OUT_DIR/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk" "lib/x86/*" "lib/x86_64/*" "lib/arm64-v8a/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
+        targets = [
+            ("android/app/build/outputs/apk/prod/release/app-prod-release.apk", ["lib/x86/", "lib/x86_64/"]),
+            ("android/app/build/outputs/apk/prod/release/XStreaming-UltraLeve-TV-32bit-armeabi-v7a.apk", ["lib/x86/", "lib/x86_64/", "lib/arm64-v8a/"]),
+            ("android/app/build/outputs/apk/prod/release/XStreaming-UltraLeve-64bit-arm64-v8a.apk", ["lib/x86/", "lib/x86_64/", "lib/armeabi-v7a/"])
+        ]
 
-          # 3. Gerar APK exclusivo para 64-bit (~20MB)
-          zip -q -d "$OUT_DIR/XStreaming-UltraLeve-64bit-arm64-v8a.apk" "lib/x86/*" "lib/x86_64/*" "lib/armeabi-v7a/*" "META-INF/*.SF" "META-INF/*.RSA" "META-INF/*.DSA" "META-INF/MANIFEST.MF" || true
+        for apk_path, drop_prefixes in targets:
+            if not os.path.exists(apk_path):
+                continue
+            tmp_path = apk_path + ".tmp"
+            with zipfile.ZipFile(apk_path, 'r') as zin:
+                with zipfile.ZipFile(tmp_path, 'w') as zout:
+                    for item in zin.infolist():
+                        fn = item.filename
+                        if any(fn.startswith(p) for p in drop_prefixes):
+                            continue
+                        if fn.startswith("META-INF/") and (fn.endswith(".SF") or fn.endswith(".RSA") or fn.endswith(".DSA") or fn.endswith("MANIFEST.MF")):
+                            continue
+                        zout.writestr(item, zin.read(fn))
+            os.replace(tmp_path, apk_path)
+        PYEOF
 
           for apk in "$OUT_DIR"/*.apk; do
-            "$BT/zipalign" -f -p 4 "$apk" "${apk}.aligned"
-            mv "${apk}.aligned" "$apk"
+            "$BT/zipalign" -f -p 4 "$apk" "${apk}.aligned" && mv "${apk}.aligned" "$apk"
             "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$apk"
             rm -f "${apk}.idsig"
-            echo "Gerado: $(basename "$apk") -> $(du -h "$apk" | cut -f1)"
+            echo "APK Pronto: $(basename "$apk") -> $(du -h "$apk" | cut -f1)"
           done
         fi
+        exit 0
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
